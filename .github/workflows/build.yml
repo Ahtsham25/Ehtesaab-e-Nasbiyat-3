@@ -1,0 +1,138 @@
+name: Build Android APK and AAB (احتساب ناصبیت)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'What do you want to build?'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - apk_only
+          - aab_only
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build APK and AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Check out repository
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: 🟩 Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 📱 Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 📜 Accept Android SDK Licenses
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
+
+      - name: 📦 Install npm dependencies
+        run: |
+          npm install --legacy-peer-deps
+
+      - name: 🏗️ Build Web Assets (Vite)
+        run: |
+          npm run build
+
+      - name: 🔄 Sync Capacitor Android Project
+        run: |
+          npx cap sync android
+
+      - name: 🔑 Make Gradle wrapper executable
+        run: |
+          chmod +x android/gradlew
+
+      - name: 🚀 Build APK (Installable on Mobile)
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'apk_only' }}
+        run: |
+          cd android
+          ./gradlew assembleRelease assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
+          cd ..
+
+      - name: 📦 Build AAB (Google Play Store Bundle)
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'aab_only' }}
+        run: |
+          cd android
+          ./gradlew bundleRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
+          cd ..
+
+      - name: 📁 Collect & Organize Output Artifacts
+        run: |
+          mkdir -p output/apk output/aab
+
+          # Copy APKs
+          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk output/apk/Ihtisab-e-Nasbiyat-v1.0-release.apk
+          elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/apk/Ihtisab-e-Nasbiyat-v1.0-release-unsigned.apk
+          fi
+
+          if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-v1.0-debug.apk
+          fi
+
+          # Copy AAB
+          if [ -f android/app/build/outputs/bundle/release/app-release.aab ]; then
+            cp android/app/build/outputs/bundle/release/app-release.aab output/aab/Ihtisab-e-Nasbiyat-v1.0-release.aab
+          fi
+
+          echo "=== Collected Files ==="
+          ls -lh output/apk || true
+          ls -lh output/aab || true
+
+      - name: 📤 Upload APK Artifacts
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'apk_only' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ihtisab-e-Nasbiyat-APK
+          path: output/apk/*.apk
+          retention-days: 30
+
+      - name: 📤 Upload AAB Artifact
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'aab_only' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ihtisab-e-Nasbiyat-AAB
+          path: output/aab/*.aab
+          retention-days: 30
+
+      - name: ✅ Build Summary
+        run: |
+          echo "### 🎉 Android Build Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application:** احتساب ناصبیت (Ihtisab-e-Nasbiyat)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package:** \`com.ehtisab.nasbiyat\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Java Version:** 21 (Temurin)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Android SDK:** 35 (Android 15)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifacts Ready:**" >> $GITHUB_STEP_SUMMARY
+          echo "  - 📱 **APK:** Direct install for any Android mobile phone" >> $GITHUB_STEP_SUMMARY
+          echo "  - 🛍️ **AAB:** Ready for Google Play Store upload" >> $GITHUB_STEP_SUMMARY
