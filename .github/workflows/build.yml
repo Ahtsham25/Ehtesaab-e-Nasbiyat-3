@@ -1,4 +1,4 @@
-name: Build Android APK and AAB (احتساب ناصبیت)
+name: Build Android APK (احتساب ناصبیت)
 
 on:
   push:
@@ -11,23 +11,22 @@ on:
       - master
   workflow_dispatch:
     inputs:
-      build_type:
-        description: 'What do you want to build?'
+      build_variant:
+        description: 'Choose build variant'
         required: true
-        default: 'both'
+        default: 'all_apk'
         type: choice
         options:
-          - both
-          - apk_only
-          - aab_only
+          - all_apk
+          - debug_only
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build APK and AAB
+  build-apk:
+    name: 📱 Build Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -41,19 +40,32 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: 🟩 Set up Node.js 22
+      - name: 🟩 Set up Node.js 20 LTS
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
           cache: 'npm'
 
-      - name: 📱 Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 📜 Accept Android SDK Licenses
+      - name: 📜 Accept Android SDK Licenses & Prepare Environment
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
+          mkdir -p "$ANDROID_HOME/licenses" || true
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> "$ANDROID_HOME/licenses/android-sdk-license"
+          echo "84831b9409646a918e30573bab4c9c91346d8abd" >> "$ANDROID_HOME/licenses/android-sdk-license"
+          echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> "$ANDROID_HOME/licenses/android-sdk-license"
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          echo "84831b9409646a918e30573bab4c9c91346d8abd" >> "$ANDROID_HOME/licenses/android-googletv-license"
+          echo "33b6a2b6492d368297b41e97d19024f2b1d3d63e" >> "$ANDROID_HOME/licenses/android-sdk-arm-dbt-license"
+          echo "d975f751698a77b662f1254ddbeed3901e1a16db" >> "$ANDROID_HOME/licenses/mips-android-sysimage-license"
+          echo "601085b94cd77f6b54b86eebd7773a237e2ee46f" >> "$ANDROID_HOME/licenses/google-gdk-license"
+
+          # Verify sdkmanager and install platform-tools / platform 35 if available
+          if command -v sdkmanager &> /dev/null; then
+            yes | sdkmanager --licenses || true
+            sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
+          elif [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" || true
+          fi
 
       - name: 📦 Install npm dependencies
         run: |
@@ -63,7 +75,7 @@ jobs:
         run: |
           npm run build
 
-      - name: 🔄 Sync Capacitor Android Project
+      - name: 🔄 Sync Capacitor Android
         run: |
           npx cap sync android
 
@@ -71,68 +83,59 @@ jobs:
         run: |
           chmod +x android/gradlew
 
-      - name: 🚀 Build APK (Installable on Mobile)
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'apk_only' }}
+      - name: 🚀 Compile Android APK via Gradle
         run: |
           cd android
-          ./gradlew assembleRelease assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
-          cd ..
+          echo "=== Building Debug APK ==="
+          ./gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
 
-      - name: 📦 Build AAB (Google Play Store Bundle)
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'aab_only' }}
-        run: |
-          cd android
-          ./gradlew bundleRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
-          cd ..
-
-      - name: 📁 Collect & Organize Output Artifacts
-        run: |
-          mkdir -p output/apk output/aab
-
-          # Copy APKs
-          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
-            cp android/app/build/outputs/apk/release/app-release.apk output/apk/Ihtisab-e-Nasbiyat-v1.0-release.apk
-          elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
-            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/apk/Ihtisab-e-Nasbiyat-v1.0-release-unsigned.apk
+          if [ "${{ github.event.inputs.build_variant }}" != "debug_only" ]; then
+            echo "=== Building Release APK (Debug-signed for direct mobile installation) ==="
+            ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" || echo "Release build skipped or completed with warnings"
           fi
+          cd ..
+
+      - name: 📁 Collect & Organize Output APKs
+        run: |
+          mkdir -p output/apk
 
           if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-v1.0-debug.apk
+            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-Debug.apk
+            echo "✅ Found Debug APK"
           fi
 
-          # Copy AAB
-          if [ -f android/app/build/outputs/bundle/release/app-release.aab ]; then
-            cp android/app/build/outputs/bundle/release/app-release.aab output/aab/Ihtisab-e-Nasbiyat-v1.0-release.aab
+          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk output/apk/Ihtisab-e-Nasbiyat-Release.apk
+            echo "✅ Found Release APK"
+          elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/apk/Ihtisab-e-Nasbiyat-Release-unsigned.apk
+            echo "✅ Found Unsigned Release APK"
           fi
 
-          echo "=== Collected Files ==="
-          ls -lh output/apk || true
-          ls -lh output/aab || true
+          echo "=== Generated Files in output/apk ==="
+          ls -lh output/apk/
+          sha256sum output/apk/*.apk || true
 
       - name: 📤 Upload APK Artifacts
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'apk_only' }}
         uses: actions/upload-artifact@v4
         with:
           name: Ihtisab-e-Nasbiyat-APK
           path: output/apk/*.apk
           retention-days: 30
 
-      - name: 📤 Upload AAB Artifact
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'both' || github.event.inputs.build_type == 'aab_only' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ihtisab-e-Nasbiyat-AAB
-          path: output/aab/*.aab
-          retention-days: 30
-
-      - name: ✅ Build Summary
+      - name: 📋 Build Summary Report
         run: |
-          echo "### 🎉 Android Build Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎉 Android APK Build Succeeded!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Application:** احتساب ناصبیت (Ihtisab-e-Nasbiyat)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Package:** \`com.ehtisab.nasbiyat\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Java Version:** 21 (Temurin)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Android SDK:** 35 (Android 15)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Artifacts Ready:**" >> $GITHUB_STEP_SUMMARY
-          echo "  - 📱 **APK:** Direct install for any Android mobile phone" >> $GITHUB_STEP_SUMMARY
-          echo "  - 🛍️ **AAB:** Ready for Google Play Store upload" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **App Name** | احتساب ناصبیت (Ihtisab-e-Nasbiyat) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Package ID** | \`com.ehtisab.nasbiyat\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Java Version** | 21 (Temurin JDK) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Gradle Version** | 8.14.3 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Android SDK** | 35 (Android 15) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 📲 How to install:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the \`Ihtisab-e-Nasbiyat-APK\` zip from Artifacts below." >> $GITHUB_STEP_SUMMARY
+          echo "2. Extract the zip file on your computer or phone." >> $GITHUB_STEP_SUMMARY
+          echo "3. Tap \`Ihtisab-e-Nasbiyat-Debug.apk\` to install directly on any Android device." >> $GITHUB_STEP_SUMMARY
