@@ -1,12 +1,12 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 
 // Initialize PDF.js worker
 if (typeof window !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
   try {
     pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
   } catch {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version || '4.10.38'}/pdf.worker.min.mjs`;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
   }
 }
 
@@ -27,12 +27,22 @@ export function normalizePdfUrl(url: string): string {
  * Fetch PDF with automated fallback through reliable CORS proxies if direct download is restricted
  */
 export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number) => void): Promise<ArrayBuffer> {
+  // If it's a relative local URL like /data/sample-preview.pdf
+  if (url.startsWith('/') || url.startsWith('./')) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`مقامی فائل نہیں مل سکی (${res.status})`);
+    if (onProgress) onProgress(100);
+    return await res.arrayBuffer();
+  }
+
   const sources = [
-    // 1. Direct fetch
+    // 1. Server-side streaming proxy (fastest, zero CORS restrictions)
+    `/api/pdf-proxy?url=${encodeURIComponent(url)}`,
+    // 2. Direct fetch
     url,
-    // 2. CORS Proxy via corsproxy.io
+    // 3. CORS Proxy via corsproxy.io
     `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-    // 3. CORS Proxy via allorigins
+    // 4. CORS Proxy via allorigins
     `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   ];
 
@@ -41,15 +51,31 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
   for (let i = 0; i < sources.length; i++) {
     const targetUrl = sources[i];
     try {
+      // Use AbortController to prevent long hanging requests (timeout after 12s)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+
       const response = await fetch(targetUrl, {
         method: 'GET',
+        signal: controller.signal,
         headers: {
           Accept: 'application/pdf,*/*',
         },
       });
 
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+        lastError = new Error(`سرور کا جواب: ${response.status} (${response.statusText})`);
+        continue;
+      }
+
+      // Check if response is actually HTML error page instead of PDF
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html') || contentType.includes('application/json')) {
+        // Not a PDF, server returned an HTML error page (e.g. 503 or 404 from Archive.org)
+        lastError = new Error('فراہم کردہ لنک پر پی ڈی ایف فائل موجود نہیں ہے (سرور نے ایرر پیج واپس کیا)۔');
+        continue;
       }
 
       const contentLength = response.headers.get('content-length');
@@ -90,12 +116,11 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
       return combined.buffer;
     } catch (err: any) {
       lastError = err;
-      // Try next fallback
       continue;
     }
   }
 
-  throw lastError || new Error('پی ڈی ایف فائل ڈاؤن لوڈ نہیں ہو سکی۔ برائے مہربانی انٹرنیٹ چیک کریں۔');
+  throw lastError || new Error('پی ڈی ایف فائل ڈاؤن لوڈ نہیں ہو سکی۔ برائے مہربانی اپنا انٹرنیٹ چیک کریں یا ڈیوائس سے فائل منتخب کریں۔');
 }
 
 /**
@@ -109,7 +134,7 @@ export async function loadPdfDocument(
   if (source.data) {
     const loadingTask = pdfjsLib.getDocument({
       data: source.data,
-      cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
+      cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
       cMapPacked: true,
     });
     return await loadingTask.promise;
@@ -129,7 +154,7 @@ export async function loadPdfDocument(
   if (source.url.startsWith('blob:') || source.url.startsWith('data:')) {
     const loadingTask = pdfjsLib.getDocument({
       url: source.url,
-      cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
+      cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
       cMapPacked: true,
     });
     const doc = await loadingTask.promise;
@@ -141,7 +166,7 @@ export async function loadPdfDocument(
 
   const loadingTask = pdfjsLib.getDocument({
     data: arrayBuffer,
-    cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/cmaps/',
+    cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
     cMapPacked: true,
   });
 

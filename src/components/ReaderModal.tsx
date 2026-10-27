@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Maximize2,
@@ -7,6 +7,8 @@ import {
   Bookmark,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   BookOpen,
   CheckCircle2,
   RotateCcw,
@@ -14,25 +16,24 @@ import {
   Moon,
   Coffee,
   Sparkles,
-  Eye,
-  EyeOff,
-  Type,
-  List,
-  Layers,
   ArrowRight,
   Share2,
   ZoomIn,
   ZoomOut,
   Highlighter,
-  MessageSquare,
-  Copy,
-  Check,
+  MoreVertical,
+  Camera,
+  Scissors,
+  FileText,
   PenTool,
-  Columns2
+  Columns2,
+  RefreshCw,
+  FileUp,
+  RotateCw,
+  List
 } from 'lucide-react';
 import { VolumeData, getReadingProgress, HighlightItem } from '../types/book';
 import { BOOK_VOLUMES_CONTENT, ChapterItem } from '../data/bookContent';
-import { extractArchiveId } from '../utils/archiveUtils';
 import { CanvasDrawer } from './CanvasDrawer';
 import { DualPageEditorModal } from './DualPageEditorModal';
 import { InternalPdfViewer } from './InternalPdfViewer';
@@ -49,7 +50,7 @@ interface ReaderModalProps {
   highlights?: HighlightItem[];
 }
 
-export type ReaderTheme = 'sepia' | 'night' | 'emerald' | 'day';
+export type ReaderTheme = 'day' | 'sepia' | 'night';
 
 export const ReaderModal: React.FC<ReaderModalProps> = ({
   volume,
@@ -61,199 +62,109 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   onAddHighlight,
   highlights = [],
 }) => {
-  // Reading mode: default to the authentic in-app PDF canvas reader
-  const [activeMode, setActiveMode] = useState<'pdf' | 'text'>('pdf');
-  const [dynamicTotalPages, setDynamicTotalPages] = useState<number>(volume?.pageCount && volume.pageCount > 0 ? volume.pageCount : 560);
-  const [theme, setTheme] = useState<ReaderTheme>('sepia');
-  const [focusMode, setFocusMode] = useState(false);
-  const [fontSize, setFontSize] = useState<number>(18);
-  const [fontFamily, setFontFamily] = useState<'nastaliq' | 'sans'>('nastaliq');
-  const [showToc, setShowToc] = useState(false);
-  const [showVolumeHighlights, setShowVolumeHighlights] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  // Mode: 'archive-page' (direct scanned book pages as in user screenshot) vs 'text' (Unicode chapters) vs 'local-pdf'
+  const [activeMode, setActiveMode] = useState<'archive-page' | 'text' | 'local-pdf'>('archive-page');
+  const [theme, setTheme] = useState<ReaderTheme>('day');
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isDrawMode, setIsDrawMode] = useState<boolean>(false);
   const [showDualEditor, setShowDualEditor] = useState<boolean>(false);
+  const [showOptionsMenu, setShowOptionsMenu] = useState<boolean>(false);
+  const [showToc, setShowToc] = useState<boolean>(false);
+  const [showVolumeHighlights, setShowVolumeHighlights] = useState<boolean>(false);
 
-  // Text selection & Highlight popup state
+  // Page tracking
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageInput, setPageInput] = useState<string>('1');
+  const [imageLoading, setImageLoading] = useState<boolean>(true);
+  const [imageError, setImageError] = useState<boolean>(false);
+  const [zoomLevel, setZoomLevel] = useState<number>(100);
+  const [rotation, setRotation] = useState<number>(0);
+
+  // Toast notifications
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Text selection & Highlight popup state (in text mode)
   const [selectedText, setSelectedText] = useState<string>('');
   const [highlightCoords, setHighlightCoords] = useState<{ x: number; y: number } | null>(null);
   const [highlightColor, setHighlightColor] = useState<string>('#f59e0b');
   const [highlightNote, setHighlightNote] = useState<string>('');
   const [showNoteInput, setShowNoteInput] = useState(false);
-  const [highlightToast, setHighlightToast] = useState(false);
-
-  // Page tracking
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [pageInput, setPageInput] = useState<string>('1');
-  const [sliderValue, setSliderValue] = useState<number>(1);
-  const [activeChapterIndex, setActiveChapterIndex] = useState<number>(0);
-  const [showSavedToast, setShowSavedToast] = useState(false);
 
   // Swipe & Touch Gestures
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchStartY, setTouchStartY] = useState<number | null>(null);
-  const [swipeHint, setSwipeHint] = useState<boolean>(true);
-  const [swipeToast, setSwipeToast] = useState<{ show: boolean; text: string; direction: 'left' | 'right' } | null>(null);
 
-  // PDF Viewer Manual Zoom state
-  const [pdfZoom, setPdfZoom] = useState<number>(100);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleZoomIn = () => {
-    setPdfZoom((prev) => Math.min(250, prev + 15));
+  // Derive total pages and archive item ID
+  const archiveId = volume?.archiveItemId || '1_20261016_20261016_1311';
+  const totalPages = volume?.pageCount && volume.pageCount > 0 ? volume.pageCount : 476;
+  const progressPct = getReadingProgress(currentPage, totalPages);
+
+  const volumeContent = volume ? (BOOK_VOLUMES_CONTENT[volume.volumeNumber] || BOOK_VOLUMES_CONTENT[1]) : BOOK_VOLUMES_CONTENT[1];
+  const chapters = volumeContent.chapters || [];
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 2500);
   };
 
-  const handleZoomOut = () => {
-    setPdfZoom((prev) => Math.max(50, prev - 15));
-  };
-
-  const handleResetZoom = () => {
-    setPdfZoom(100);
-  };
-
-  const handleTextSelection = () => {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) {
-      setHighlightCoords(null);
-      setSelectedText('');
-      return;
-    }
-
-    const text = selection.toString().trim();
-    if (text.length >= 3) {
-      setSelectedText(text);
-      try {
-        const range = selection.getRangeAt(0);
-        const rect = range.getBoundingClientRect();
-        setHighlightCoords({
-          x: Math.max(16, Math.min(window.innerWidth - 270, rect.left + rect.width / 2 - 135)),
-          y: Math.max(16, rect.top - 55),
-        });
-      } catch {
-        setHighlightCoords({ x: window.innerWidth / 2 - 135, y: 120 });
-      }
-    } else {
-      setHighlightCoords(null);
-      setSelectedText('');
-    }
-  };
-
-  const handleSaveHighlight = (colorToUse?: string) => {
-    if (!selectedText.trim() || !volume) return;
-    const finalColor = colorToUse || highlightColor;
-    const newHighlight: HighlightItem = {
-      id: 'hl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
-      volumeId: volume.id,
-      volumeNumber: volume.volumeNumber,
-      volumeTitleUrdu: volume.volumeTitleUrdu,
-      page: currentPage,
-      text: selectedText.trim(),
-      color: finalColor,
-      note: highlightNote.trim() || undefined,
-      createdAt: new Date().toISOString(),
-    };
-
-    if (onAddHighlight) {
-      onAddHighlight(newHighlight);
-    }
-    setHighlightCoords(null);
-    setSelectedText('');
-    setHighlightNote('');
-    setShowNoteInput(false);
-    window.getSelection()?.removeAllRanges();
-    setHighlightToast(true);
-    setTimeout(() => setHighlightToast(false), 2500);
-  };
-
+  // Sync initial page
   useEffect(() => {
     if (volume) {
       const initialPage = volume.lastReadPage && volume.lastReadPage > 0 ? volume.lastReadPage : 1;
       setCurrentPage(initialPage);
-      setPageInput(initialPage.toString());
-      setSliderValue(initialPage);
-      if (volume.pageCount && volume.pageCount > 0) {
-        setDynamicTotalPages(volume.pageCount);
-      }
+      setPageInput(String(initialPage));
       try {
         recordRecentRead(volume, initialPage);
       } catch {}
     }
   }, [volume]);
 
-  // Load saved theme preference from local storage
+  // Preload adjacent pages for instant flipping
   useEffect(() => {
-    const savedTheme = localStorage.getItem('ehtisab_reader_theme') as ReaderTheme;
-    if (savedTheme && ['sepia', 'night', 'emerald', 'day'].includes(savedTheme)) {
-      setTheme(savedTheme);
-    }
-
-    const handleFullscreenChange = () => {
-      if (!document.fullscreenElement) {
-        setIsFullscreen(false);
+    if (archiveId && activeMode === 'archive-page') {
+      const nextP = currentPage + 1;
+      const prevP = currentPage - 1;
+      if (nextP <= totalPages) {
+        const imgNext = new Image();
+        imgNext.src = `https://archive.org/download/${archiveId}/page/n${nextP}_w1200.jpg`;
       }
-    };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
-
-  const toggleFullscreen = () => {
-    if (!isFullscreen) {
-      setIsFullscreen(true);
-      try {
-        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
-          document.documentElement.requestFullscreen().catch(() => {});
-        }
-      } catch {}
-    } else {
-      setIsFullscreen(false);
-      try {
-        if (document.fullscreenElement && document.exitFullscreen) {
-          document.exitFullscreen().catch(() => {});
-        }
-      } catch {}
+      if (prevP >= 1) {
+        const imgPrev = new Image();
+        imgPrev.src = `https://archive.org/download/${archiveId}/page/n${prevP}_w1200.jpg`;
+      }
     }
-  };
+  }, [archiveId, currentPage, totalPages, activeMode]);
 
   if (!volume) return null;
 
-  const totalPages = dynamicTotalPages > 0 ? dynamicTotalPages : (volume.pageCount > 0 ? volume.pageCount : 560);
-  const progressPct = getReadingProgress(currentPage, totalPages);
-  const volumeContent = BOOK_VOLUMES_CONTENT[volume.volumeNumber] || BOOK_VOLUMES_CONTENT[1];
-  const chapters = volumeContent.chapters || [];
-  const currentChapter: ChapterItem | undefined = chapters[activeChapterIndex] || chapters[0];
-
-  const handleThemeChange = (newTheme: ReaderTheme) => {
-    setTheme(newTheme);
+  // Handle page navigation
+  const handlePageChange = (newPage: number) => {
+    const clamped = Math.max(1, Math.min(newPage, totalPages));
+    setCurrentPage(clamped);
+    setPageInput(String(clamped));
+    setImageLoading(true);
+    setImageError(false);
+    onUpdateProgress(volume.id, clamped);
     try {
-      localStorage.setItem('ehtisab_reader_theme', newTheme);
+      recordRecentRead(volume, clamped);
     } catch {}
   };
 
-  const handlePageChange = (newPage: number) => {
-    const clampedPage = Math.min(Math.max(1, newPage), totalPages);
-    setCurrentPage(clampedPage);
-    setPageInput(clampedPage.toString());
-    setSliderValue(clampedPage);
-    onUpdateProgress(volume.id, clampedPage);
-    try {
-      recordRecentRead(volume, clampedPage);
-    } catch {}
-    setShowSavedToast(true);
-    setTimeout(() => setShowSavedToast(false), 1800);
-
-    // Auto-update chapter index based on page if matched
-    const matchedIdx = chapters.findIndex((ch, idx) => {
-      const nextCh = chapters[idx + 1];
-      if (nextCh) {
-        return clampedPage >= ch.page && clampedPage < nextCh.page;
-      }
-      return clampedPage >= ch.page;
-    });
-    if (matchedIdx !== -1) {
-      setActiveChapterIndex(matchedIdx);
+  const handleNextPage = () => {
+    if (currentPage < totalPages) {
+      handlePageChange(currentPage + 1);
     }
   };
 
-  const handleInputSubmit = (e: React.FormEvent) => {
+  const handlePrevPage = () => {
+    if (currentPage > 1) {
+      handlePageChange(currentPage - 1);
+    }
+  };
+
+  const handlePageInputSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const parsed = parseInt(pageInput, 10);
     if (!isNaN(parsed)) {
@@ -261,935 +172,525 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     }
   };
 
-  const handleSelectChapter = (idx: number, chPage: number) => {
-    setActiveChapterIndex(idx);
-    handlePageChange(chPage);
-    setShowToc(false);
-  };
-
-  // Keyboard navigation (ArrowLeft = Next, ArrowRight = Prev)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
-      if (e.key === 'ArrowLeft') {
-        if (currentPage < totalPages) handlePageChange(currentPage + 1);
-      } else if (e.key === 'ArrowRight') {
-        if (currentPage > 1) handlePageChange(currentPage - 1);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPage, totalPages]);
-
-  // Auto-hide swipe tutorial pill after 4.5s
-  useEffect(() => {
-    const timer = setTimeout(() => setSwipeHint(false), 4500);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Touch Swipe Handlers for mobile & tablets
+  // Swipe handlers (RTL: swipe left = next page, swipe right = previous page)
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (isDrawMode) return;
-    if (e.touches && e.touches.length === 1) {
-      setTouchStartX(e.touches[0].clientX);
-      setTouchStartY(e.touches[0].clientY);
-    }
+    setTouchStartX(e.touches[0].clientX);
+    setTouchStartY(e.touches[0].clientY);
   };
 
   const handleTouchEnd = (e: React.TouchEvent) => {
-    if (isDrawMode || touchStartX === null || touchStartY === null) {
-      setTouchStartX(null);
-      setTouchStartY(null);
-      return;
-    }
-    if (e.changedTouches && e.changedTouches.length > 0) {
-      const touchEndX = e.changedTouches[0].clientX;
-      const touchEndY = e.changedTouches[0].clientY;
-      const deltaX = touchStartX - touchEndX;
-      const deltaY = touchStartY - touchEndY;
+    if (touchStartX === null || touchStartY === null) return;
+    const diffX = touchStartX - e.changedTouches[0].clientX;
+    const diffY = touchStartY - e.changedTouches[0].clientY;
 
-      // Check if horizontal swipe is dominant and exceeds 45px threshold
-      if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 45) {
-        setSwipeHint(false);
-        if (deltaX > 0) {
-          // Swipe Left -> Next Page
-          if (currentPage < totalPages) {
-            handlePageChange(currentPage + 1);
-            setSwipeToast({
-              show: true,
-              text: `اگلا صفحہ ص ${currentPage + 1}`,
-              direction: 'left',
-            });
-            setTimeout(() => setSwipeToast(null), 1200);
-          }
-        } else {
-          // Swipe Right -> Previous Page
-          if (currentPage > 1) {
-            handlePageChange(currentPage - 1);
-            setSwipeToast({
-              show: true,
-              text: `پچھلا صفحہ ص ${currentPage - 1}`,
-              direction: 'right',
-            });
-            setTimeout(() => setSwipeToast(null), 1200);
-          }
-        }
+    if (Math.abs(diffX) > 45 && Math.abs(diffX) > Math.abs(diffY)) {
+      if (diffX > 0) {
+        // Swiped left -> Next page
+        handleNextPage();
+      } else {
+        // Swiped right -> Previous page
+        handlePrevPage();
       }
     }
     setTouchStartX(null);
     setTouchStartY(null);
   };
 
-  // Theme styling definitions
-  const themeStyles = {
-    sepia: {
-      bg: 'bg-[#211a14]',
-      cardBg: 'bg-[#2b221a]',
-      sidebarBg: 'bg-[#1b1510]',
-      text: 'text-[#fbf0d9]',
-      textMuted: 'text-[#d4af84]',
-      border: 'border-[#4a3b2c]',
-      headerBg: 'bg-[#19130f]',
-      accent: 'text-[#f59e0b]',
-      highlight: 'bg-[#3d2e20]',
-      progressBg: 'bg-[#1b1510]',
-      progressBar: 'bg-gradient-to-r from-amber-600 to-amber-400',
-    },
-    night: {
-      bg: 'bg-[#09090b]',
-      cardBg: 'bg-[#121215]',
-      sidebarBg: 'bg-[#0e0e11]',
-      text: 'text-[#e4e4e7]',
-      textMuted: 'text-[#a1a1aa]',
-      border: 'border-[#27272a]',
-      headerBg: 'bg-[#040405]',
-      accent: 'text-[#fbbf24]',
-      highlight: 'bg-[#1c1c22]',
-      progressBg: 'bg-[#18181b]',
-      progressBar: 'bg-gradient-to-r from-amber-500 to-emerald-400',
-    },
-    emerald: {
-      bg: 'bg-[#051c14]',
-      cardBg: 'bg-[#0b291e]',
-      sidebarBg: 'bg-[#03140e]',
-      text: 'text-[#d1fae5]',
-      textMuted: 'text-[#6ee7b7]',
-      border: 'border-[#065f46]',
-      headerBg: 'bg-[#02100b]',
-      accent: 'text-[#34d399]',
-      highlight: 'bg-[#0e3b2b]',
-      progressBg: 'bg-[#03140e]',
-      progressBar: 'bg-gradient-to-r from-emerald-500 to-teal-300',
-    },
-    day: {
-      bg: 'bg-[#fcfbf9]',
-      cardBg: 'bg-[#ffffff]',
-      sidebarBg: 'bg-[#f5f3ef]',
-      text: 'text-[#1c1917]',
-      textMuted: 'text-[#57534e]',
-      border: 'border-[#e7e5e4]',
-      headerBg: 'bg-[#f0ece5]',
-      accent: 'text-[#b45309]',
-      highlight: 'bg-[#f5f0e6]',
-      progressBg: 'bg-[#e7e5e4]',
-      progressBar: 'bg-gradient-to-r from-amber-600 to-emerald-600',
-    },
-  }[theme];
+  // Screenshot / Snapshot capture
+  const handleTakeSnapshot = () => {
+    const pageUrl = `https://archive.org/download/${archiveId}/page/n${currentPage}_w1200.jpg`;
+    window.open(pageUrl, '_blank');
+    showToast('صفحہ کی تصویر الگ ٹیب میں کھل گئی!');
+  };
+
+  // Share handler
+  const handleShare = () => {
+    const text = `کتاب: احتساب ناصبیت (${volume.volumeTitleUrdu})\nصفحہ نمبر: ${currentPage}\nلنک: https://archive.org/details/${archiveId}`;
+    if (navigator.share) {
+      navigator.share({ title: `احتساب ناصبیت - ${volume.volumeTitleUrdu}`, text }).catch(() => {});
+    } else {
+      navigator.clipboard?.writeText(text);
+      showToast('صفحہ کا حوالہ کاپی ہو گیا!');
+    }
+  };
+
+  // Snip / Crop reference
+  const handleSnipTool = () => {
+    setShowDualEditor(true);
+  };
+
+  // Local PDF file picker
+  const handleLocalFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setActiveMode('local-pdf');
+      setShowOptionsMenu(false);
+      showToast('مقامی فائل لوڈ ہو رہی ہے...');
+    }
+  };
+
+  const currentArchiveImageUrl = `https://archive.org/download/${archiveId}/page/n${currentPage}_w1200.jpg`;
+
+  // Reading Theme styles
+  const getThemeBg = () => {
+    switch (theme) {
+      case 'sepia':
+        return 'bg-[#f8f4ec] text-stone-900';
+      case 'night':
+        return 'bg-[#121212] text-stone-100';
+      case 'day':
+      default:
+        return 'bg-white text-stone-900';
+    }
+  };
+
+  const getImageFilter = () => {
+    switch (theme) {
+      case 'sepia':
+        return 'sepia(0.2) contrast(1.05)';
+      case 'night':
+        return 'invert(0.92) hue-rotate(180deg) contrast(1.1)';
+      case 'day':
+      default:
+        return 'none';
+    }
+  };
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex items-center justify-center bg-stone-950/90 backdrop-blur-md ${
-        isFullscreen ? 'p-0 w-screen h-screen' : 'p-0 sm:p-2'
-      }`}
-    >
-      <div
-        className={`w-full h-full flex flex-col shadow-2xl transition-all duration-300 overflow-hidden ${
-          isFullscreen
-            ? 'w-screen h-screen max-w-none max-h-none rounded-none border-none'
-            : 'sm:rounded-2xl border max-w-6xl max-h-[96vh]'
-        } ${themeStyles.border} ${themeStyles.bg}`}
-      >
-        {/* TOP TOOLBAR - Hidden in Focus Mode unless hovered */}
-        {!focusMode && (
-          <header className={`px-4 py-2.5 border-b ${themeStyles.border} ${themeStyles.headerBg} flex items-center justify-between gap-3 flex-wrap transition-all`}>
-            {/* Title & Volume Info */}
-            <div className="flex items-center gap-2">
-              <span className={`font-nastaliq text-lg sm:text-xl font-bold ${themeStyles.accent}`}>
-                احتساب ناصبیت
-              </span>
-              <span className="text-xs px-2 py-0.5 rounded-md bg-stone-800/80 text-amber-300 font-nastaliq">
-                {volume.volumeTitleUrdu}
-              </span>
-            </div>
+    <div className="fixed inset-0 z-50 flex flex-col bg-stone-100 select-none overflow-hidden font-sans">
+      {/* 1. TOP MAIN HEADER (Matches user screenshot: Green title + document icon + back arrow) */}
+      <header className="h-14 bg-white border-b border-stone-200 px-4 flex items-center justify-between z-30 shrink-0">
+        {/* Left: Green Document / Book Icon */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowToc(!showToc)}
+            className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-colors cursor-pointer"
+            title="فہرستِ ابواب و فصول"
+          >
+            <BookOpen className="w-5 h-5 text-emerald-600" />
+          </button>
+        </div>
 
-            {/* Reading Mode Switcher (Real PDF Canvas vs Text Chapters) */}
-            <div className="flex items-center bg-stone-900/90 rounded-xl p-1 border border-stone-800 text-xs">
-              <button
-                onClick={() => setActiveMode('pdf')}
-                className={`px-3 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 font-sans ${
-                  activeMode === 'pdf'
-                    ? 'bg-amber-600 text-stone-950 font-bold shadow'
-                    : 'text-stone-300 hover:text-white'
-                }`}
-              >
-                <BookOpen className="w-3.5 h-3.5" />
-                <span>اصل پی ڈی ایف کتاب</span>
-              </button>
-              <button
-                onClick={() => setActiveMode('text')}
-                className={`px-3 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 font-sans ${
-                  activeMode === 'text'
-                    ? 'bg-amber-600 text-stone-950 font-bold shadow'
-                    : 'text-stone-300 hover:text-white'
-                }`}
-              >
-                <Type className="w-3.5 h-3.5" />
-                <span>تحریری فصول و متن</span>
-              </button>
-            </div>
+        {/* Center: Urdu Book Title in Emerald Green */}
+        <div className="flex-1 text-center px-2">
+          <h1 className="font-nastaliq text-xl sm:text-2xl font-bold text-emerald-600 tracking-wide inline-flex items-center gap-2">
+            <span>احتساب ناصبیت</span>
+            <span className="text-emerald-700/80 font-normal">—</span>
+            <span className="text-emerald-700">{volume.volumeTitleUrdu}</span>
+          </h1>
+        </div>
 
-            {/* Theme & Night Mode Toggle Palette */}
-            <div className="flex items-center gap-1.5">
-              {/* Theme Selector Buttons */}
-              <div className="flex items-center bg-stone-900/90 rounded-xl p-0.5 border border-stone-800">
-                <button
-                  onClick={() => handleThemeChange('sepia')}
-                  title="سیپیا موڈ (نرم کاغذ)"
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                    theme === 'sepia'
-                      ? 'bg-amber-900/70 text-amber-300 shadow'
-                      : 'text-stone-400 hover:text-stone-200'
-                  }`}
-                >
-                  <Coffee className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => handleThemeChange('night')}
-                  title="نائٹ موڈ (سیاہ - زیرو آئی اسٹرین)"
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                    theme === 'night'
-                      ? 'bg-stone-800 text-amber-400 shadow'
-                      : 'text-stone-400 hover:text-stone-200'
-                  }`}
-                >
-                  <Moon className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => handleThemeChange('emerald')}
-                  title="ایمرلڈ نائٹ (زمردی سبز)"
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                    theme === 'emerald'
-                      ? 'bg-emerald-950 text-emerald-300 shadow'
-                      : 'text-stone-400 hover:text-stone-200'
-                  }`}
-                >
-                  <Sparkles className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => handleThemeChange('day')}
-                  title="ڈے موڈ (دن کا مطالعہ)"
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                    theme === 'day'
-                      ? 'bg-stone-200 text-stone-950 shadow'
-                      : 'text-stone-400 hover:text-stone-200'
-                  }`}
-                >
-                  <Sun className="w-4 h-4" />
-                </button>
-              </div>
+        {/* Right: Back Arrow Button (RTL back arrow) */}
+        <button
+          onClick={onClose}
+          className="p-2 text-stone-700 hover:text-stone-950 hover:bg-stone-100 rounded-xl transition-colors cursor-pointer"
+          title="بند کریں اور واپس جائیں"
+        >
+          <ArrowRight className="w-6 h-6" />
+        </button>
+      </header>
 
-              {/* Focus Mode Toggle */}
-              <button
-                onClick={() => setFocusMode(true)}
-                title="فوکس موڈ فعال کریں (مکمل یکسوئی)"
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-stone-900/90 hover:bg-stone-800 text-amber-300 border border-stone-800 rounded-xl text-xs transition-colors cursor-pointer"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">فوکس موڈ</span>
-              </button>
-
-              {/* Bookmark Button */}
-              <button
-                onClick={() => onToggleBookmark(volume.id)}
-                title={isBookmarked ? 'محفوظ فہرست سے خارج کریں' : 'بُک مارک کریں'}
-                className={`p-2 rounded-xl border border-stone-800 transition-colors cursor-pointer ${
-                  isBookmarked
-                    ? 'text-amber-400 bg-amber-950/60'
-                    : 'text-stone-400 hover:text-stone-200 hover:bg-stone-800'
-                }`}
-              >
-                <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-amber-400' : ''}`} />
-              </button>
-
-              {/* Download */}
-              <button
-                onClick={() => onDownload(volume)}
-                title="پی ڈی ایف ڈاؤن لوڈ کریں"
-                className="p-2 text-stone-300 hover:text-amber-400 hover:bg-stone-800 rounded-xl border border-stone-800 cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-              </button>
-
-              {/* Draw Mode Button */}
-              <button
-                onClick={() => setIsDrawMode(!isDrawMode)}
-                title={isDrawMode ? 'ڈرائنگ موڈ بند کریں' : 'قلمی یادداشت و ڈرائنگ موڈ فعال کریں'}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer shadow-sm ${
-                  isDrawMode
-                    ? 'bg-amber-500 text-stone-950 font-bold border-amber-400 shadow-md ring-2 ring-amber-400/40'
-                    : 'text-stone-300 hover:text-amber-300 bg-stone-900 hover:bg-stone-800 border-stone-800'
-                }`}
-              >
-                <PenTool className="w-4 h-4 text-amber-400" />
-                <span className="hidden xs:inline sm:inline text-xs font-sans">
-                  {isDrawMode ? 'قلم موڈ فعال' : 'قلم / ڈرا'}
-                </span>
-              </button>
-
-              {/* Dual-Page Landscape Reference & Annotation Editor */}
-              <button
-                onClick={() => setShowDualEditor(true)}
-                title="لینڈسکیپ سند ساز و صفحہ ایڈیٹر کھولیں (ٹائٹل پیج + مطلوبہ صفحہ مع ہائی لائٹر و ٹیکسٹ ایڈیٹر)"
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer shadow-sm text-stone-200 hover:text-amber-300 bg-stone-900 hover:bg-stone-800 border-stone-800 hover:border-amber-500/50"
-              >
-                <Columns2 className="w-4 h-4 text-emerald-400" />
-                <span className="hidden xs:inline sm:inline text-xs font-sans">
-                  صفحہ ایڈیٹر
-                </span>
-              </button>
-
-              {/* Full Screen Toggle Button */}
-              <button
-                onClick={toggleFullscreen}
-                title={isFullscreen ? 'عام ونڈو میں واپس آئیں (Exit Full Screen)' : 'پوری سکرین پر پھیلائیں (Full Screen View)'}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer shadow-sm ${
-                  isFullscreen
-                    ? 'bg-amber-600 text-stone-950 font-bold border-amber-400 shadow-md ring-2 ring-amber-400/40'
-                    : 'text-stone-300 hover:text-amber-300 bg-stone-900 hover:bg-stone-800 border-stone-800'
-                }`}
-              >
-                {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4 text-amber-400" />}
-                <span className="hidden xs:inline sm:inline text-xs font-sans">
-                  {isFullscreen ? 'عام ونڈو' : 'فل سکرین'}
-                </span>
-              </button>
-
-              {/* Close */}
-              <button
-                onClick={onClose}
-                title="بند کریں"
-                className="p-2 text-stone-300 hover:text-rose-400 hover:bg-stone-800 rounded-xl border border-stone-800 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-          </header>
-        )}
-
-        {/* FOCUS MODE FLOATING EXIT BUTTON */}
-        {focusMode && (
-          <div className="absolute top-4 left-4 z-40 flex items-center gap-2">
+      {/* 2. SECONDARY TOOLBAR STRIP (Matches user screenshot icons and page jumper) */}
+      <div className="h-11 bg-white border-b border-stone-200 px-3 flex items-center justify-between text-stone-700 text-xs z-20 shrink-0">
+        {/* Left Icons Strip */}
+        <div className="flex items-center gap-1 sm:gap-2">
+          {/* 3-Dots More Options Menu */}
+          <div className="relative">
             <button
-              onClick={() => setFocusMode(false)}
-              className="flex items-center gap-1.5 bg-stone-900/90 hover:bg-stone-800 text-amber-300 border border-amber-600/40 px-3.5 py-1.5 rounded-full text-xs font-semibold shadow-xl backdrop-blur-md cursor-pointer animate-in fade-in"
+              onClick={() => setShowOptionsMenu(!showOptionsMenu)}
+              className={`p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer ${
+                showOptionsMenu ? 'bg-stone-200 text-stone-900' : 'text-stone-700'
+              }`}
+              title="مزید آپشنز"
             >
-              <EyeOff className="w-3.5 h-3.5" />
-              <span>فوکس موڈ سے باہر نکلیں</span>
+              <MoreVertical className="w-4 h-4" />
             </button>
 
-            {/* Quick theme cycle */}
-            <button
-              onClick={() => {
-                const nextTheme: Record<ReaderTheme, ReaderTheme> = {
-                  sepia: 'night',
-                  night: 'emerald',
-                  emerald: 'day',
-                  day: 'sepia',
-                };
-                handleThemeChange(nextTheme[theme]);
-              }}
-              title="تھیم تبدیل کریں"
-              className="p-1.5 bg-stone-900/90 hover:bg-stone-800 text-stone-300 border border-stone-700 rounded-full cursor-pointer shadow-lg"
-            >
-              {theme === 'night' && <Moon className="w-4 h-4 text-amber-400" />}
-              {theme === 'sepia' && <Coffee className="w-4 h-4 text-amber-300" />}
-              {theme === 'emerald' && <Sparkles className="w-4 h-4 text-emerald-400" />}
-              {theme === 'day' && <Sun className="w-4 h-4 text-stone-900" />}
-            </button>
-
-            {/* Fullscreen toggle inside focus mode */}
-            <button
-              onClick={toggleFullscreen}
-              title={isFullscreen ? 'فل سکرین بند کریں' : 'فل سکرین کریں'}
-              className="p-1.5 bg-stone-900/90 hover:bg-stone-800 text-amber-300 border border-stone-700 rounded-full cursor-pointer shadow-lg"
-            >
-              {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-            </button>
-          </div>
-        )}
-
-        {/* READING PROGRESS & INTERACTION CONTROLS BAR */}
-        {!focusMode && (
-          <div className={`px-4 py-2 border-b ${themeStyles.border} ${themeStyles.cardBg} flex flex-wrap items-center justify-between gap-3 text-xs`}>
-            {/* Table of Contents and Font / Zoom Controls */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowToc(!showToc)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
-                  showToc
-                    ? 'bg-amber-600 text-stone-950 font-bold border-amber-500'
-                    : `${themeStyles.border} ${themeStyles.textMuted} hover:${themeStyles.text}`
-                }`}
-              >
-                <List className="w-3.5 h-3.5" />
-                <span>فہرست مضامین</span>
-              </button>
-
-              {activeMode === 'text' ? (
-                <>
-                  {/* Font Sizing */}
-                  <div className="flex items-center gap-1 border border-stone-800 rounded-lg p-0.5 bg-stone-900/60">
-                    <button
-                      onClick={() => setFontSize(Math.max(14, fontSize - 2))}
-                      className="px-2 py-0.5 text-stone-300 hover:text-white rounded cursor-pointer text-xs"
-                    >
-                      A-
-                    </button>
-                    <span className="text-[10px] text-stone-400 font-mono px-1">{fontSize}px</span>
-                    <button
-                      onClick={() => setFontSize(Math.min(26, fontSize + 2))}
-                      className="px-2 py-0.5 text-stone-300 hover:text-white rounded cursor-pointer text-xs"
-                    >
-                      A+
-                    </button>
-                  </div>
-
-                  {/* Font Family */}
-                  <button
-                    onClick={() => setFontFamily(fontFamily === 'nastaliq' ? 'sans' : 'nastaliq')}
-                    className="px-2 py-1 text-stone-400 hover:text-stone-200 border border-stone-800 rounded-lg text-[11px] cursor-pointer"
-                  >
-                    {fontFamily === 'nastaliq' ? 'خط: نستعلیق' : 'خط: سادہ'}
-                  </button>
-                </>
-              ) : (
-                <div className="hidden sm:flex items-center gap-1.5 text-stone-400 text-[11px] bg-stone-900/60 px-2 py-1 rounded-lg border border-stone-800 font-sans">
-                  <BookOpen className="w-3 h-3 text-amber-400" />
-                  <span>کینوس پی ڈی ایف ریڈر</span>
+            {/* Dropdown Menu */}
+            {showOptionsMenu && (
+              <div className="absolute top-full left-0 mt-1 w-52 bg-white rounded-2xl shadow-2xl border border-stone-200 p-2 z-50 text-xs space-y-1 animate-in zoom-in-95 duration-150">
+                <div className="px-2 py-1 text-[11px] font-bold text-stone-400 border-b border-stone-100">
+                  ریڈر تھیمز
                 </div>
-              )}
+                <div className="flex items-center gap-1 px-2 py-1">
+                  <button
+                    onClick={() => {
+                      setTheme('day');
+                      setShowOptionsMenu(false);
+                    }}
+                    className={`flex-1 py-1 rounded-lg text-center font-sans border text-[11px] ${
+                      theme === 'day' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-stone-50 border-stone-200'
+                    }`}
+                  >
+                    سفید
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTheme('sepia');
+                      setShowOptionsMenu(false);
+                    }}
+                    className={`flex-1 py-1 rounded-lg text-center font-sans border text-[11px] ${
+                      theme === 'sepia' ? 'bg-amber-600 text-white border-amber-600' : 'bg-[#fcf8f0] border-amber-200'
+                    }`}
+                  >
+                    سیپیا
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTheme('night');
+                      setShowOptionsMenu(false);
+                    }}
+                    className={`flex-1 py-1 rounded-lg text-center font-sans border text-[11px] ${
+                      theme === 'night' ? 'bg-stone-900 text-white border-stone-900' : 'bg-stone-100 border-stone-300'
+                    }`}
+                  >
+                    نائٹ
+                  </button>
+                </div>
 
-              {/* Volume Highlights Drawer Button */}
-              <button
-                onClick={() => {
-                  setShowVolumeHighlights(!showVolumeHighlights);
-                  setShowToc(false);
-                }}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
-                  showVolumeHighlights
-                    ? 'bg-amber-600 text-stone-950 font-bold border-amber-500'
-                    : `${themeStyles.border} ${themeStyles.textMuted} hover:${themeStyles.text}`
-                }`}
-              >
-                <Highlighter className="w-3.5 h-3.5" />
-                <span>ہائی لائٹس ({highlights.filter((h) => h.volumeId === volume?.id).length})</span>
-              </button>
-            </div>
+                <div className="border-t border-stone-100 my-1"></div>
 
-            {/* Interactive Page Slider Component */}
-            <div className="flex items-center gap-2 flex-1 min-w-[210px] max-w-xs sm:max-w-sm bg-stone-900/80 border border-stone-800 rounded-xl px-2.5 py-1">
-              <span className="text-[10px] text-stone-400 font-mono">۱</span>
-              <input
-                type="range"
-                min="1"
-                max={totalPages}
-                value={sliderValue}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value, 10);
-                  setSliderValue(val);
-                  setPageInput(val.toString());
-                }}
-                onMouseUp={() => handlePageChange(sliderValue)}
-                onTouchEnd={() => handlePageChange(sliderValue)}
-                className="w-full h-1.5 bg-stone-950 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                title={`صفحہ سلائیڈر: ص ${sliderValue} / ${totalPages}`}
-              />
-              <span className="text-[11px] text-amber-400 font-mono font-bold whitespace-nowrap min-w-[46px] text-center">
-                ص {sliderValue}
-              </span>
-            </div>
-
-            {/* Page Stepper & Jumper */}
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button
-                onClick={() => handlePageChange(currentPage - 10)}
-                title="10 صفحات پیچھے"
-                className="px-2 py-1 bg-stone-800/80 hover:bg-stone-700 text-stone-300 rounded-lg text-[11px] cursor-pointer"
-              >
-                -۱۰
-              </button>
-
-              <button
-                onClick={() => handlePageChange(currentPage - 1)}
-                disabled={currentPage <= 1}
-                className="p-1 bg-stone-800/80 hover:bg-stone-700 disabled:opacity-30 text-stone-200 rounded-lg cursor-pointer"
-                title="پچھلا صفحہ"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-
-              {/* Dedicated Page Jump Input Field */}
-              <form onSubmit={handleInputSubmit} className="flex items-center gap-1 bg-stone-950/90 border border-stone-800 rounded-xl px-2 py-0.5 shadow-inner">
-                <span className={`text-[11px] font-sans ${themeStyles.textMuted}`}>صفحہ:</span>
-                <input
-                  type="number"
-                  min="1"
-                  max={totalPages}
-                  value={pageInput}
-                  onChange={(e) => setPageInput(e.target.value)}
-                  onBlur={() => {
-                    const parsed = parseInt(pageInput, 10);
-                    if (!isNaN(parsed) && parsed !== currentPage) handlePageChange(parsed);
-                  }}
-                  className={`w-12 text-center rounded-md py-0.5 text-xs font-mono font-bold border ${themeStyles.border} bg-stone-900 text-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500`}
-                />
-                <span className={`text-[11px] font-mono ${themeStyles.textMuted}`}>/ {totalPages}</span>
                 <button
-                  type="submit"
-                  className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold px-2 py-0.5 rounded-md text-[10px] cursor-pointer transition-colors"
+                  onClick={() => {
+                    setIsDrawMode(!isDrawMode);
+                    setShowOptionsMenu(false);
+                  }}
+                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center justify-between cursor-pointer"
                 >
-                  جائیں
+                  <span className="font-sans">قلم و ڈرائنگ موڈ</span>
+                  <PenTool className="w-3.5 h-3.5 text-stone-500" />
                 </button>
-              </form>
 
-              <button
-                onClick={() => handlePageChange(currentPage + 1)}
-                disabled={currentPage >= totalPages}
-                className="p-1 bg-stone-800/80 hover:bg-stone-700 disabled:opacity-30 text-stone-200 rounded-lg cursor-pointer"
-                title="اگلا صفحہ"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
+                <button
+                  onClick={() => {
+                    setRotation((prev) => (prev + 90) % 360);
+                    setShowOptionsMenu(false);
+                  }}
+                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center justify-between cursor-pointer"
+                >
+                  <span className="font-sans">صفحہ ۹۰° گھمائیں</span>
+                  <RotateCw className="w-3.5 h-3.5 text-stone-500" />
+                </button>
 
-              <button
-                onClick={() => handlePageChange(currentPage + 10)}
-                title="10 صفحات آگے"
-                className="px-2 py-1 bg-stone-800/80 hover:bg-stone-700 text-stone-300 rounded-lg text-[11px] cursor-pointer"
-              >
-                +۱۰
-              </button>
-            </div>
+                <button
+                  onClick={() => {
+                    fileInputRef.current?.click();
+                  }}
+                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center justify-between cursor-pointer"
+                >
+                  <span className="font-sans">ڈیوائس سے پی ڈی ایف کھولیں</span>
+                  <FileUp className="w-3.5 h-3.5 text-stone-500" />
+                </button>
 
-            {/* Reading Progress Indicator */}
-            <div className="flex items-center gap-2 min-w-[140px]">
-              <div className={`flex-1 h-2 rounded-full overflow-hidden ${themeStyles.progressBg} border ${themeStyles.border}`}>
-                <div
-                  className={`h-full rounded-full ${themeStyles.progressBar} transition-all duration-300`}
-                  style={{ width: `${progressPct}%` }}
-                ></div>
-              </div>
-              <span className="font-bold text-amber-400 font-mono text-xs">{progressPct}%</span>
-            </div>
-
-            {/* Progress Saved Toast */}
-            {showSavedToast && (
-              <div className="flex items-center gap-1 text-[11px] text-emerald-400 bg-emerald-950/80 border border-emerald-600/40 px-2 py-0.5 rounded-md animate-fade-in">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>صفحہ محفوظ!</span>
+                <button
+                  onClick={() => {
+                    onToggleBookmark(volume.id);
+                    setShowOptionsMenu(false);
+                  }}
+                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center justify-between cursor-pointer"
+                >
+                  <span className="font-sans">{isBookmarked ? 'بُک مارک خارج کریں' : 'بُک مارک محفوظ کریں'}</span>
+                  <Bookmark className={`w-3.5 h-3.5 ${isBookmarked ? 'fill-amber-500 text-amber-500' : 'text-stone-500'}`} />
+                </button>
               </div>
             )}
           </div>
-        )}
 
-        {/* MAIN READER BODY */}
-        <div className="flex-1 relative flex overflow-hidden">
-          {/* Table of Contents Drawer */}
-          {showToc && (
-            <aside className={`w-72 sm:w-80 border-l ${themeStyles.border} ${themeStyles.sidebarBg} p-4 overflow-y-auto z-20 shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col justify-between`}>
-              <div>
-                <div className="flex items-center justify-between pb-3 border-b border-stone-800 mb-3">
-                  <span className={`font-nastaliq text-base font-bold ${themeStyles.accent}`}>
-                    فہرستِ ابواب و فصول
-                  </span>
-                  <button
-                    onClick={() => setShowToc(false)}
-                    className="p-1 text-stone-400 hover:text-white rounded"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
+          {/* Share */}
+          <button
+            onClick={handleShare}
+            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer"
+            title="صفحہ کا حوالہ شیئر کریں"
+          >
+            <Share2 className="w-4 h-4" />
+          </button>
 
-                <div className="space-y-1.5">
-                  {chapters.map((ch, idx) => (
-                    <button
-                      key={ch.id}
-                      onClick={() => handleSelectChapter(idx, ch.page)}
-                      className={`w-full text-right p-2.5 rounded-xl text-xs transition-colors flex items-start justify-between gap-2 cursor-pointer ${
-                        activeChapterIndex === idx
-                          ? `${themeStyles.highlight} ${themeStyles.accent} font-bold border ${themeStyles.border}`
-                          : `${themeStyles.textMuted} hover:${themeStyles.text} hover:bg-stone-800/40`
-                      }`}
-                    >
-                      <span className="font-nastaliq leading-snug">{ch.title}</span>
-                      <span className="text-[10px] bg-stone-900 px-1.5 py-0.5 rounded border border-stone-800 whitespace-nowrap">
-                        ص {ch.page}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+          {/* Camera / Snapshot */}
+          <button
+            onClick={handleTakeSnapshot}
+            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer"
+            title="صفحہ کی تصویر کیپچر کریں"
+          >
+            <Camera className="w-4 h-4" />
+          </button>
 
-              <div className="pt-4 border-t border-stone-800 text-[11px] text-stone-500 text-center font-sans">
-                کل ابواب: {chapters.length} • کل صفحات: {totalPages}
-              </div>
-            </aside>
-          )}
+          {/* Download */}
+          <button
+            onClick={() => onDownload(volume)}
+            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer"
+            title="پی ڈی ایف ڈاؤن لوڈ کریں"
+          >
+            <Download className="w-4 h-4" />
+          </button>
 
-          {/* Volume Highlights Drawer */}
-          {showVolumeHighlights && (
-            <aside className={`w-72 sm:w-80 border-l ${themeStyles.border} ${themeStyles.sidebarBg} p-4 overflow-y-auto z-20 shadow-2xl animate-in slide-in-from-right duration-200 flex flex-col justify-between`}>
-              <div>
-                <div className="flex items-center justify-between pb-3 border-b border-stone-800 mb-3">
-                  <div className="flex items-center gap-1.5 font-bold">
-                    <Highlighter className="w-4 h-4 text-amber-400" />
-                    <span className={`font-nastaliq text-base ${themeStyles.accent}`}>
-                      اس جلد کے ہائی لائٹس ({highlights.filter((h) => h.volumeId === volume.id).length})
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => setShowVolumeHighlights(false)}
-                    className="p-1 text-stone-400 hover:text-white rounded"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
+          {/* Scissors / Snip Editor */}
+          <button
+            onClick={handleSnipTool}
+            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer"
+            title="سند ساز و صفحہ ایڈیٹر کھولیں"
+          >
+            <Scissors className="w-4 h-4" />
+          </button>
 
-                <div className="space-y-2">
-                  {highlights.filter((h) => h.volumeId === volume.id).length === 0 ? (
-                    <div className="text-center py-8 text-xs text-stone-500 font-sans">
-                      اس جلد میں ابھی کوئی ہائی لائٹ محفوظ نہیں ہے۔ متن کو سلیکٹ کر کے ہائی لائٹ کریں۔
-                    </div>
-                  ) : (
-                    highlights
-                      .filter((h) => h.volumeId === volume.id)
-                      .map((h) => (
-                        <div
-                          key={h.id}
-                          onClick={() => handlePageChange(h.page)}
-                          className="p-2.5 rounded-xl border border-stone-800 bg-stone-900/60 hover:bg-stone-800 cursor-pointer transition-colors text-xs space-y-1"
-                        >
-                          <div className="flex items-center justify-between text-[11px] text-stone-400">
-                            <span className="font-mono text-amber-400">صفحہ {h.page}</span>
-                            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: h.color }} />
-                          </div>
-                          <p className="font-nastaliq text-stone-200 line-clamp-2 leading-relaxed">
-                            "{h.text}"
-                          </p>
-                          {h.note && (
-                            <p className="text-[10px] text-stone-400 font-sans">نوٹ: {h.note}</p>
-                          )}
-                        </div>
-                      ))
-                  )}
-                </div>
-              </div>
+          {/* Document / Unicode Chapters Mode Toggle */}
+          <button
+            onClick={() => setActiveMode(activeMode === 'text' ? 'archive-page' : 'text')}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              activeMode === 'text' ? 'bg-emerald-600 text-white' : 'hover:bg-stone-100'
+            }`}
+            title={activeMode === 'text' ? 'اصل صفحہ موڈ' : 'تحریری فصول و متن'}
+          >
+            <FileText className="w-4 h-4" />
+          </button>
 
-              <div className="pt-4 border-t border-stone-800 text-[11px] text-stone-500 text-center font-sans">
-                کلک کر کے براہ راست اس صفحے پر جائیں
-              </div>
-            </aside>
-          )}
+          {/* Down Chevron (Next page) */}
+          <button
+            onClick={handleNextPage}
+            disabled={currentPage >= totalPages}
+            className="p-1.5 rounded-lg hover:bg-stone-100 disabled:opacity-30 cursor-pointer transition-colors"
+            title="اگلا صفحہ"
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
 
-          {/* Reader Content Screen */}
-          {activeMode === 'pdf' ? (
-            /* AUTHENTIC IN-APP HIGH-DPI PDF CANVAS VIEWER */
-            <div className="flex-1 h-full relative overflow-hidden flex flex-col bg-stone-950">
-              <InternalPdfViewer
-                pdfUrl={volume.pdfUrl}
-                archiveItemId={volume.archiveItemId}
-                initialPage={currentPage}
-                totalExpectedPages={totalPages}
-                onPageChange={handlePageChange}
-                onTotalPagesLoaded={(total) => {
-                  setDynamicTotalPages(total);
-                }}
-                theme={theme}
-                volumeTitle={volume.volumeTitleUrdu}
-                volumeId={volume.id}
-                volumeNumber={volume.volumeNumber}
-                isDrawMode={isDrawMode}
-                onCloseDrawMode={() => setIsDrawMode(false)}
-              />
-            </div>
-          ) : (
-            /* SCHOLARLY CHAPTERS & UNICODE TEXT READER */
-            <div
-              onTouchStart={handleTouchStart}
-              onTouchEnd={handleTouchEnd}
-              className="flex-1 overflow-y-auto p-4 sm:p-8 flex justify-center relative"
-            >
-              {/* Swipe Turn Page Feedback Toast */}
-              {swipeToast && (
-                <div
-                  className={`fixed top-1/2 ${
-                    swipeToast.direction === 'left' ? 'left-6 sm:left-12' : 'right-6 sm:right-12'
-                  } -translate-y-1/2 z-50 bg-amber-600 text-stone-950 font-bold px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 text-xs border border-amber-300 animate-in fade-in zoom-in duration-150 pointer-events-none`}
-                >
-                  {swipeToast.direction === 'left' ? (
-                    <ChevronLeft className="w-4 h-4" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4" />
-                  )}
-                  <span className="font-nastaliq font-bold">{swipeToast.text}</span>
-                </div>
-              )}
-
-              {/* Swipe Gesture Hint Pill (Fades out automatically) */}
-              {swipeHint && (
-                <div
-                  onClick={() => setSwipeHint(false)}
-                  className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 bg-stone-900/95 border border-amber-500/50 text-amber-300 px-4 py-1.5 rounded-full shadow-2xl text-[11px] font-sans flex items-center gap-2 backdrop-blur-md cursor-pointer animate-pulse"
-                  title="بند کرنے کے لیے کلک کریں"
-                >
-                  <span>👈 دائیں یا بائیں سوائپ (Swipe) کر کے صفحات پلٹیں 👉</span>
-                </div>
-              )}
-
-              {/* NATIVE URDU BOOK READER ARTICLE */}
-              <article
-                onMouseUp={handleTextSelection}
-                onTouchEnd={handleTextSelection}
-                className={`w-full max-w-3xl ${themeStyles.cardBg} border ${themeStyles.border} rounded-2xl p-6 sm:p-10 shadow-2xl transition-all duration-300 relative my-auto select-text`}
-                style={{
-                  fontSize: `${fontSize}px`,
-                  lineHeight: fontFamily === 'nastaliq' ? '2.4' : '2.0',
-                }}
-              >
-                {/* Book Header Seal */}
-                <div className="text-center pb-4 mb-6 border-b border-stone-800/60">
-                  <div className="text-sm font-arabic tracking-wide text-amber-400/90 mb-1">
-                    بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ
-                  </div>
-                  <h2 className={`font-nastaliq text-2xl sm:text-3xl font-bold ${themeStyles.accent}`}>
-                    احتساب ناصبیت
-                  </h2>
-                  <p className={`text-xs ${themeStyles.textMuted} mt-0.5 font-sans`}>
-                    {volume.volumeTitleUrdu}
-                  </p>
-                </div>
-
-                {/* Chapter Title Badge */}
-                {currentChapter && (
-                  <div className="mb-6">
-                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-950/40 border border-amber-600/30 text-amber-300 text-xs mb-3 font-nastaliq">
-                      <span>{currentChapter.title}</span>
-                    </div>
-
-                    {/* Arabic Quranic Verse or Hadith Quote if present */}
-                    {currentChapter.arabicVerse && (
-                      <div className={`p-4 rounded-xl border ${themeStyles.border} ${themeStyles.highlight} my-4 text-center`}>
-                        <p className="font-arabic text-xl sm:text-2xl text-amber-300 leading-relaxed font-bold">
-                          "{currentChapter.arabicVerse}"
-                        </p>
-                        {currentChapter.translation && (
-                          <p className={`mt-2 text-xs sm:text-sm ${themeStyles.textMuted} font-sans leading-relaxed`}>
-                            ترجمہ: {currentChapter.translation}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Scholarly Content Paragraphs */}
-                    <div className={`space-y-4 ${themeStyles.text} ${fontFamily === 'nastaliq' ? 'font-nastaliq text-justify' : 'font-body-ur text-justify'}`}>
-                      {currentChapter.content.map((p, pIdx) => (
-                        <p key={pIdx} className="indent-4 leading-relaxed">
-                          {p}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Volume Foreword */}
-                {currentPage <= 5 && volumeContent.foreword && (
-                  <div className={`mt-6 p-4 rounded-xl border border-dashed ${themeStyles.border} text-xs ${themeStyles.textMuted} leading-relaxed`}>
-                    <strong className="text-amber-400 block mb-1">مقدمۃ التحقیق:</strong>
-                    {volumeContent.foreword}
-                  </div>
-                )}
-
-                {/* Bottom Page Navigation inside Book Canvas */}
-                <div className="mt-10 pt-4 border-t border-stone-800/80 flex items-center justify-between text-xs text-stone-400">
-                  <button
-                    onClick={() => handlePageChange(currentPage - 1)}
-                    disabled={currentPage <= 1}
-                    className="flex items-center gap-1 hover:text-amber-300 disabled:opacity-30 cursor-pointer"
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                    <span>پچھلا صفحہ</span>
-                  </button>
-
-                  <div className="text-center">
-                    <span className="font-mono font-bold text-amber-400">ص {currentPage}</span>
-                    <span className="text-stone-500 text-[11px] block">از {totalPages}</span>
-                  </div>
-
-                  <button
-                    onClick={() => handlePageChange(currentPage + 1)}
-                    disabled={currentPage >= totalPages}
-                    className="flex items-center gap-1 hover:text-amber-300 disabled:opacity-30 cursor-pointer"
-                  >
-                    <span>اگلا صفحہ</span>
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Freehand Canvas Overlay for Internal Reader */}
-                <CanvasDrawer
-                  volumeId={volume.id}
-                  volumeNumber={volume.volumeNumber}
-                  volumeTitleUrdu={volume.volumeTitleUrdu}
-                  currentPage={currentPage}
-                  isDrawMode={isDrawMode}
-                  onCloseDrawMode={() => setIsDrawMode(false)}
-                />
-              </article>
-            </div>
-          )}
+          {/* Up Chevron (Previous page) */}
+          <button
+            onClick={handlePrevPage}
+            disabled={currentPage <= 1}
+            className="p-1.5 rounded-lg hover:bg-stone-100 disabled:opacity-30 cursor-pointer transition-colors"
+            title="پچھلا صفحہ"
+          >
+            <ChevronUp className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* BOTTOM STATUS BAR */}
-        {!focusMode && (
-          <footer className={`px-4 py-2 border-t ${themeStyles.border} ${themeStyles.headerBg} flex flex-wrap items-center justify-between text-xs ${themeStyles.textMuted} gap-2`}>
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>
-                موجودہ پیش رفت: <strong>صفحہ {currentPage}</strong> از {totalPages} (
-                <strong>{progressPct}%</strong> مطالعہ مکمل)
-              </span>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => handlePageChange(1)}
-                className="hover:text-amber-300 flex items-center gap-1 cursor-pointer"
-              >
-                <RotateCcw className="w-3 h-3" />
-                <span>شروع سے مطالعہ</span>
-              </button>
-              <span>|</span>
-              <span>تھیم: {theme === 'sepia' ? 'سیپیا نرم کاغذ' : theme === 'night' ? 'نائٹ موڈ' : theme === 'emerald' ? 'زمردی نائٹ' : 'ڈے پیپر'}</span>
-            </div>
-          </footer>
-        )}
+        {/* Right: Page Jumper Box (Matches user screenshot: "من 476" + input box "2") */}
+        <form onSubmit={handlePageInputSubmit} className="flex items-center gap-1.5">
+          <span className="text-stone-500 font-sans text-xs">من {totalPages}</span>
+          <input
+            type="number"
+            min="1"
+            max={totalPages}
+            value={pageInput}
+            onChange={(e) => setPageInput(e.target.value)}
+            className="w-12 h-7 text-center text-xs font-mono font-bold bg-white text-stone-900 border border-stone-300 rounded px-1 focus:outline-none focus:border-emerald-600 shadow-inner"
+          />
+        </form>
       </div>
 
-      {/* FLOATING TEXT SELECTION HIGHLIGHT POPUP */}
-      {highlightCoords && selectedText && (
-        <div
-          style={{
-            position: 'fixed',
-            top: `${highlightCoords.y}px`,
-            left: `${highlightCoords.x}px`,
-            zIndex: 100,
-          }}
-          className="bg-stone-900/95 backdrop-blur-md border border-amber-500/60 rounded-2xl p-2 shadow-2xl flex flex-col gap-2 animate-in fade-in zoom-in-95 duration-150 max-w-xs"
-        >
-          {/* Top row: colors & save */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[10px] text-stone-300 font-sans ml-1">ہائی لائٹ:</span>
-            {[
-              { name: 'سنہری', color: '#f59e0b' },
-              { name: 'سبز', color: '#10b981' },
-              { name: 'گلابی', color: '#f43f5e' },
-              { name: 'نیلا', color: '#0ea5e9' },
-            ].map((c) => (
-              <button
-                key={c.color}
-                onClick={() => handleSaveHighlight(c.color)}
-                title={c.name}
-                className="w-5 h-5 rounded-full border border-stone-600 hover:scale-125 transition-transform cursor-pointer shadow-sm"
-                style={{ backgroundColor: c.color }}
-              />
-            ))}
-
-            <div className="h-4 w-px bg-stone-700 mx-1" />
-
-            <button
-              onClick={() => setShowNoteInput(!showNoteInput)}
-              title="نوٹ شامل کریں"
-              className={`p-1 rounded-lg border text-xs cursor-pointer ${
-                showNoteInput
-                  ? 'bg-amber-600 text-stone-950 border-amber-400'
-                  : 'text-stone-300 hover:text-white border-stone-700 hover:bg-stone-800'
-              }`}
-            >
-              <MessageSquare className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(selectedText);
-                setHighlightCoords(null);
-                setSelectedText('');
-              }}
-              title="کاپی کریں"
-              className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded-lg border border-stone-700 cursor-pointer"
-            >
-              <Copy className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              onClick={() => {
-                setHighlightCoords(null);
-                setSelectedText('');
-              }}
-              className="p-1 text-stone-400 hover:text-rose-400 rounded-lg cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+      {/* 3. MAIN CENTER READING SCREEN */}
+      <main
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        className={`flex-1 overflow-auto flex justify-center items-start p-2 sm:p-4 relative ${getThemeBg()}`}
+      >
+        {/* Toast Alert */}
+        {toastMessage && (
+          <div className="fixed top-28 left-1/2 -translate-x-1/2 z-50 bg-stone-900/90 backdrop-blur-md text-emerald-400 border border-emerald-500/50 px-4 py-2 rounded-2xl text-xs font-sans shadow-2xl flex items-center gap-2 animate-in fade-in zoom-in-95">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span>{toastMessage}</span>
           </div>
+        )}
 
-          {/* Note input if clicked */}
-          {showNoteInput && (
-            <div className="flex items-center gap-1.5 pt-1 border-t border-stone-800">
-              <input
-                type="text"
-                value={highlightNote}
-                onChange={(e) => setHighlightNote(e.target.value)}
-                placeholder="اس اقتباس پر مختصر نوٹ لکھیں..."
-                className="w-full bg-stone-950 border border-stone-700 rounded-lg px-2 py-1 text-xs text-stone-200 placeholder-stone-500 focus:outline-none focus:border-amber-500 font-sans"
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSaveHighlight();
-                }}
-              />
-              <button
-                onClick={() => handleSaveHighlight()}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-2 py-1 rounded-lg text-xs cursor-pointer whitespace-nowrap"
-              >
-                محفوظ
-              </button>
+        {/* Active View: Scanned Book Page (Default as in screenshot) */}
+        {activeMode === 'archive-page' && (
+          <div
+            className="relative flex justify-center items-center max-w-full my-auto transition-transform duration-200"
+            style={{
+              transform: `scale(${zoomLevel / 100}) rotate(${rotation}deg)`,
+              transformOrigin: 'top center',
+            }}
+          >
+            {/* Loading Spinner */}
+            {imageLoading && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 z-20 min-h-[400px]">
+                <div className="w-8 h-8 border-3 border-emerald-600/30 border-t-emerald-600 rounded-full animate-spin mb-2"></div>
+                <span className="text-xs text-stone-500 font-sans">صفحہ لوڈ ہو رہا ہے...</span>
+              </div>
+            )}
+
+            {/* Error Fallback */}
+            {imageError && (
+              <div className="text-center p-8 bg-stone-50 border border-stone-200 rounded-2xl max-w-md my-8 shadow-sm">
+                <BookOpen className="w-10 h-10 text-emerald-600 mx-auto mb-2" />
+                <h3 className="font-nastaliq text-lg font-bold text-stone-800 mb-1">
+                  صفحہ لوڈ کرنے میں تاخیر
+                </h3>
+                <p className="text-xs text-stone-500 font-sans mb-4">
+                  انٹرنیٹ آرکائیو سے رابطہ دوبارہ استوار کیا جا رہا ہے۔ آپ ٹیکسٹ موڈ میں بھی پڑھ سکتے ہیں۔
+                </p>
+                <div className="flex gap-2 justify-center">
+                  <button
+                    onClick={() => {
+                      setImageLoading(true);
+                      setImageError(false);
+                    }}
+                    className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-sans cursor-pointer"
+                  >
+                    دوبارہ کوشش
+                  </button>
+                  <button
+                    onClick={() => setActiveMode('text')}
+                    className="px-3 py-1.5 bg-stone-200 text-stone-800 rounded-lg text-xs font-sans cursor-pointer"
+                  >
+                    تحریری فصول دیکھیں
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Clean Book Page Image (Exact match to screenshot) */}
+            <img
+              key={`page-${archiveId}-${currentPage}`}
+              src={currentArchiveImageUrl}
+              alt={`صفحہ ${currentPage}`}
+              onLoad={() => setImageLoading(false)}
+              onError={() => {
+                setImageLoading(false);
+                setImageError(true);
+              }}
+              style={{ filter: getImageFilter() }}
+              className={`max-w-full sm:max-w-2xl md:max-w-3xl h-auto object-contain shadow-md rounded bg-white transition-opacity duration-150 ${
+                imageLoading ? 'opacity-0' : 'opacity-100'
+              }`}
+            />
+
+            {/* Freehand Notes / Canvas Overlay on top of the authentic book page */}
+            <CanvasDrawer
+              volumeId={volume.id}
+              volumeNumber={volume.volumeNumber}
+              volumeTitleUrdu={volume.volumeTitleUrdu}
+              currentPage={currentPage}
+              isDrawMode={isDrawMode}
+              onCloseDrawMode={() => setIsDrawMode(false)}
+            />
+          </div>
+        )}
+
+        {/* Local PDF Canvas Viewer Mode */}
+        {activeMode === 'local-pdf' && (
+          <div className="w-full h-full flex flex-col">
+            <InternalPdfViewer
+              pdfUrl={volume.pdfUrl}
+              archiveItemId={volume.archiveItemId}
+              initialPage={currentPage}
+              totalExpectedPages={totalPages}
+              onPageChange={handlePageChange}
+              onSwitchToTextMode={() => setActiveMode('text')}
+              theme={theme === 'sepia' ? 'sepia' : theme === 'night' ? 'night' : 'day'}
+              volumeTitle={volume.volumeTitleUrdu}
+              volumeId={volume.id}
+              volumeNumber={volume.volumeNumber}
+              isDrawMode={isDrawMode}
+              onCloseDrawMode={() => setIsDrawMode(false)}
+            />
+          </div>
+        )}
+
+        {/* Transcribed Text Chapters Mode */}
+        {activeMode === 'text' && (
+          <article className="w-full max-w-3xl bg-white border border-stone-200 rounded-2xl p-6 sm:p-10 shadow-sm my-auto font-nastaliq leading-relaxed">
+            <div className="text-center pb-4 mb-6 border-b border-stone-100">
+              <div className="text-sm font-arabic text-emerald-700 mb-1">
+                بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ
+              </div>
+              <h2 className="text-2xl font-bold text-stone-900">احتساب ناصبیت</h2>
+              <p className="text-xs text-stone-500 font-sans mt-0.5">{volume.volumeTitleUrdu}</p>
             </div>
-          )}
-        </div>
-      )}
 
-      {/* HIGHLIGHT SAVED TOAST */}
-      {highlightToast && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-2 text-xs font-semibold animate-in fade-in slide-in-from-top-2 border border-emerald-400">
-          <Check className="w-4 h-4" />
-          <span>اقتباس ہائی لائٹس ٹیب میں کامیابی سے محفوظ ہو گیا!</span>
-        </div>
-      )}
+            {chapters.length > 0 && (
+              <div className="space-y-4 text-justify">
+                <div className="inline-block px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 text-xs font-bold mb-3 border border-emerald-200">
+                  {chapters[0]?.title}
+                </div>
+                {chapters[0]?.content.map((p, idx) => (
+                  <p key={idx} className="indent-4 leading-loose text-stone-800">
+                    {p}
+                  </p>
+                ))}
+              </div>
+            )}
+          </article>
+        )}
 
-      {/* DUAL PAGE LANDSCAPE REFERENCE & ANNOTATION EDITOR MODAL */}
-      {showDualEditor && volume && (
+        {/* Table of Contents Drawer */}
+        {showToc && (
+          <aside className="fixed inset-y-0 left-0 w-72 sm:w-80 bg-white border-r border-stone-200 p-4 shadow-2xl z-40 overflow-y-auto animate-in slide-in-from-left duration-200 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between pb-3 border-b border-stone-200 mb-3">
+                <span className="font-nastaliq text-base font-bold text-emerald-700">
+                  فہرستِ ابواب و فصول
+                </span>
+                <button
+                  onClick={() => setShowToc(false)}
+                  className="p-1 text-stone-400 hover:text-stone-900 rounded"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                {chapters.map((ch, idx) => (
+                  <button
+                    key={ch.id || idx}
+                    onClick={() => {
+                      handlePageChange(ch.page || 1);
+                      setShowToc(false);
+                    }}
+                    className="w-full text-right p-2.5 rounded-xl text-xs transition-colors flex items-start justify-between gap-2 hover:bg-emerald-50 text-stone-800 cursor-pointer"
+                  >
+                    <span className="font-nastaliq">{ch.title}</span>
+                    <span className="text-[10px] bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded border border-stone-200 font-mono">
+                      ص {ch.page}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-stone-100 text-[11px] text-stone-400 text-center font-sans">
+              کل صفحات: {totalPages}
+            </div>
+          </aside>
+        )}
+      </main>
+
+      {/* 4. BOTTOM PROGRESS SLIDER BAR (Matches user screenshot: full green slider + 476 / 2 on right) */}
+      <footer className="h-12 bg-white border-t border-stone-200 px-4 flex items-center justify-between gap-4 z-20 shrink-0">
+        {/* Green Range Slider */}
+        <div className="flex-1 flex items-center">
+          <input
+            type="range"
+            min="1"
+            max={totalPages}
+            value={currentPage}
+            onChange={(e) => handlePageChange(parseInt(e.target.value, 10))}
+            className="w-full h-1.5 bg-stone-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+            title={`صفحہ سلائیڈر: ${currentPage} / ${totalPages}`}
+          />
+        </div>
+
+        {/* Page Counter Text on Right: Matches screenshot format `476 / 2` */}
+        <div className="text-xs font-mono font-bold text-stone-800 whitespace-nowrap min-w-[70px] text-left">
+          {totalPages} / {currentPage}
+        </div>
+      </footer>
+
+      {/* Hidden local file picker */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="hidden"
+        onChange={handleLocalFileChange}
+      />
+
+      {/* Dual Page Snip / Reference Editor Modal */}
+      {showDualEditor && (
         <DualPageEditorModal
           volume={volume}
           currentPage={currentPage}
           onClose={() => setShowDualEditor(false)}
-          onPageChange={(p) => handlePageChange(p)}
         />
       )}
     </div>
