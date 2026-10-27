@@ -14,10 +14,11 @@ import { PrivacyPolicyTab } from './components/PrivacyPolicyTab';
 import { AdminPanel } from './components/AdminPanel';
 import { RecentlyOpenedCarousel } from './components/RecentlyOpenedCarousel';
 import { ScreenEditorModal } from './components/ScreenEditorModal';
-import { BookOpen, Sparkles, Download, Check, Filter, Palette } from 'lucide-react';
+import { BookOpen, Sparkles, Download, Check, Filter, Palette, Cloud } from 'lucide-react';
 import { Language, TRANSLATIONS, ENGLISH_VOLUME_DATA } from './i18n/translations';
 import { getAllDrawings } from './utils/drawingStorage';
 import { getRecentReads, recordRecentRead, RecentReadItem, RECENT_READS_EVENT } from './utils/readingHistory';
+import { fetchVolumesFromGithub } from './utils/githubSync';
 
 const HIGHLIGHTS_STORAGE_KEY = 'ehtisab_highlights_v1';
 
@@ -127,6 +128,61 @@ export default function App() {
     };
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  // Background Cloud Sync with GitHub Repository
+  const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
+  const [cloudSyncToast, setCloudSyncToast] = useState<{ show: boolean; msg: string; isError?: boolean }>({
+    show: false,
+    msg: '',
+    isError: false,
+  });
+
+  const syncWithGithubCloud = async (showNotice = false) => {
+    setIsCloudSyncing(true);
+    try {
+      const res = await fetchVolumesFromGithub();
+      if (res.success && res.volumes && res.volumes.length > 0) {
+        setVolumes(res.volumes);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(res.volumes));
+        } catch {}
+        if (showNotice) {
+          setCloudSyncToast({
+            show: true,
+            msg: `✓ گٹ ہب کلاؤڈ سے تمام کتب کا تازہ ڈیٹا (${res.volumes.length} جلدیں) اپ ڈیٹ ہو گیا!`,
+            isError: false,
+          });
+          setTimeout(() => setCloudSyncToast({ show: false, msg: '', isError: false }), 4500);
+        }
+      } else if (showNotice && res.error) {
+        setCloudSyncToast({
+          show: true,
+          msg: res.error,
+          isError: true,
+        });
+        setTimeout(() => setCloudSyncToast({ show: false, msg: '', isError: false }), 4500);
+      }
+    } catch {
+      if (showNotice) {
+        setCloudSyncToast({
+          show: true,
+          msg: 'گٹ ہب سے رابطہ نہ ہو سکا۔',
+          isError: true,
+        });
+        setTimeout(() => setCloudSyncToast({ show: false, msg: '', isError: false }), 4000);
+      }
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  };
+
+  // Run silent background sync on launch
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      syncWithGithubCloud(false);
+    }, 1200);
+    return () => clearTimeout(timer);
   }, []);
 
   // Save volumes state
@@ -280,7 +336,23 @@ export default function App() {
         onShowSplash={() => setShowSplash(true)}
         lang={lang}
         onToggleLang={handleToggleLang}
+        onSyncCloud={() => syncWithGithubCloud(true)}
+        isSyncingCloud={isCloudSyncing}
       />
+
+      {/* Cloud Sync Alert Toast */}
+      {cloudSyncToast.show && (
+        <div
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-2.5 text-xs font-semibold animate-in fade-in slide-in-from-top-4 border ${
+            cloudSyncToast.isError
+              ? 'bg-rose-900/95 border-rose-500 text-rose-200'
+              : 'bg-emerald-950/95 border-emerald-500 text-emerald-200'
+          }`}
+        >
+          <Cloud className="w-4 h-4 text-emerald-400" />
+          <span>{cloudSyncToast.msg}</span>
+        </div>
+      )}
 
       {/* Download Alert Toast */}
       {downloadToast.show && (
@@ -488,6 +560,7 @@ export default function App() {
             volumes={volumes}
             onSaveVolumes={saveVolumesState}
             onResetVolumes={handleResetVolumes}
+            onSyncGithub={() => syncWithGithubCloud(true)}
           />
         )}
       </main>

@@ -35,6 +35,7 @@ import { BOOK_VOLUMES_CONTENT, ChapterItem } from '../data/bookContent';
 import { extractArchiveId } from '../utils/archiveUtils';
 import { CanvasDrawer } from './CanvasDrawer';
 import { DualPageEditorModal } from './DualPageEditorModal';
+import { InternalPdfViewer } from './InternalPdfViewer';
 import { recordRecentRead } from '../utils/readingHistory';
 
 interface ReaderModalProps {
@@ -60,8 +61,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   onAddHighlight,
   highlights = [],
 }) => {
-  // Reading mode: default to the beautiful internal reader so it NEVER shows external website errors!
-  const [activeMode, setActiveMode] = useState<'internal' | 'pdf'>('internal');
+  // Reading mode: default to the authentic in-app PDF canvas reader
+  const [activeMode, setActiveMode] = useState<'pdf' | 'text'>('pdf');
+  const [dynamicTotalPages, setDynamicTotalPages] = useState<number>(volume?.pageCount && volume.pageCount > 0 ? volume.pageCount : 560);
   const [theme, setTheme] = useState<ReaderTheme>('sepia');
   const [focusMode, setFocusMode] = useState(false);
   const [fontSize, setFontSize] = useState<number>(18);
@@ -168,6 +170,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
       setCurrentPage(initialPage);
       setPageInput(initialPage.toString());
       setSliderValue(initialPage);
+      if (volume.pageCount && volume.pageCount > 0) {
+        setDynamicTotalPages(volume.pageCount);
+      }
       try {
         recordRecentRead(volume, initialPage);
       } catch {}
@@ -210,7 +215,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
 
   if (!volume) return null;
 
-  const totalPages = volume.pageCount > 0 ? volume.pageCount : 560;
+  const totalPages = dynamicTotalPages > 0 ? dynamicTotalPages : (volume.pageCount > 0 ? volume.pageCount : 560);
   const progressPct = getReadingProgress(currentPage, totalPages);
   const volumeContent = BOOK_VOLUMES_CONTENT[volume.volumeNumber] || BOOK_VOLUMES_CONTENT[1];
   const chapters = volumeContent.chapters || [];
@@ -417,29 +422,29 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
               </span>
             </div>
 
-            {/* Reading Mode Switcher (Internal Reader vs Raw PDF) */}
-            <div className="flex items-center bg-stone-900/80 rounded-xl p-1 border border-stone-800 text-xs">
-              <button
-                onClick={() => setActiveMode('internal')}
-                className={`px-3 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1 font-sans ${
-                  activeMode === 'internal'
-                    ? 'bg-amber-600 text-stone-950 font-bold shadow'
-                    : 'text-stone-300 hover:text-white'
-                }`}
-              >
-                <BookOpen className="w-3.5 h-3.5" />
-                <span>انٹرنل کتاب ریڈر</span>
-              </button>
+            {/* Reading Mode Switcher (Real PDF Canvas vs Text Chapters) */}
+            <div className="flex items-center bg-stone-900/90 rounded-xl p-1 border border-stone-800 text-xs">
               <button
                 onClick={() => setActiveMode('pdf')}
-                className={`px-3 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1 font-sans ${
+                className={`px-3 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 font-sans ${
                   activeMode === 'pdf'
                     ? 'bg-amber-600 text-stone-950 font-bold shadow'
                     : 'text-stone-300 hover:text-white'
                 }`}
               >
-                <Layers className="w-3.5 h-3.5" />
-                <span>پی ڈی ایف ویور</span>
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>اصل پی ڈی ایف کتاب</span>
+              </button>
+              <button
+                onClick={() => setActiveMode('text')}
+                className={`px-3 py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 font-sans ${
+                  activeMode === 'text'
+                    ? 'bg-amber-600 text-stone-950 font-bold shadow'
+                    : 'text-stone-300 hover:text-white'
+                }`}
+              >
+                <Type className="w-3.5 h-3.5" />
+                <span>تحریری فصول و متن</span>
               </button>
             </div>
 
@@ -628,20 +633,20 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           <div className={`px-4 py-2 border-b ${themeStyles.border} ${themeStyles.cardBg} flex flex-wrap items-center justify-between gap-3 text-xs`}>
             {/* Table of Contents and Font / Zoom Controls */}
             <div className="flex items-center gap-2">
-              {activeMode === 'internal' ? (
-                <>
-                  <button
-                    onClick={() => setShowToc(!showToc)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
-                      showToc
-                        ? 'bg-amber-600 text-stone-950 font-bold border-amber-500'
-                        : `${themeStyles.border} ${themeStyles.textMuted} hover:${themeStyles.text}`
-                    }`}
-                  >
-                    <List className="w-3.5 h-3.5" />
-                    <span>فہرست مضامین</span>
-                  </button>
+              <button
+                onClick={() => setShowToc(!showToc)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
+                  showToc
+                    ? 'bg-amber-600 text-stone-950 font-bold border-amber-500'
+                    : `${themeStyles.border} ${themeStyles.textMuted} hover:${themeStyles.text}`
+                }`}
+              >
+                <List className="w-3.5 h-3.5" />
+                <span>فہرست مضامین</span>
+              </button>
 
+              {activeMode === 'text' ? (
+                <>
                   {/* Font Sizing */}
                   <div className="flex items-center gap-1 border border-stone-800 rounded-lg p-0.5 bg-stone-900/60">
                     <button
@@ -666,62 +671,29 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
                   >
                     {fontFamily === 'nastaliq' ? 'خط: نستعلیق' : 'خط: سادہ'}
                   </button>
-
-                  {/* Volume Highlights Drawer Button */}
-                  <button
-                    onClick={() => {
-                      setShowVolumeHighlights(!showVolumeHighlights);
-                      setShowToc(false);
-                    }}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
-                      showVolumeHighlights
-                        ? 'bg-amber-600 text-stone-950 font-bold border-amber-500'
-                        : `${themeStyles.border} ${themeStyles.textMuted} hover:${themeStyles.text}`
-                    }`}
-                  >
-                    <Highlighter className="w-3.5 h-3.5" />
-                    <span>ہائی لائٹس ({highlights.filter((h) => h.volumeId === volume?.id).length})</span>
-                  </button>
                 </>
               ) : (
-                /* PDF Manual Zoom Controls in Toolbar */
-                <div className="flex items-center gap-1 border border-stone-800 rounded-xl p-0.5 bg-stone-900/90 shadow-sm">
-                  <span className="text-[11px] text-stone-400 px-1.5 font-sans">پی ڈی ایف زوم:</span>
-                  <button
-                    onClick={handleZoomOut}
-                    disabled={pdfZoom <= 50}
-                    title="زوم کم کریں (-)"
-                    className="p-1 text-stone-300 hover:text-amber-400 hover:bg-stone-800 disabled:opacity-30 rounded-lg cursor-pointer transition-colors"
-                  >
-                    <ZoomOut className="w-3.5 h-3.5" />
-                  </button>
-
-                  <button
-                    onClick={handleResetZoom}
-                    title="۱۰۰٪ پر ری سیٹ کریں"
-                    className="px-2 py-0.5 text-xs font-mono font-bold text-amber-400 hover:text-amber-300 rounded cursor-pointer"
-                  >
-                    {pdfZoom}%
-                  </button>
-
-                  <button
-                    onClick={handleZoomIn}
-                    disabled={pdfZoom >= 250}
-                    title="زوم بڑھائیں (+)"
-                    className="p-1 text-stone-300 hover:text-amber-400 hover:bg-stone-800 disabled:opacity-30 rounded-lg cursor-pointer transition-colors"
-                  >
-                    <ZoomIn className="w-3.5 h-3.5" />
-                  </button>
-
-                  <button
-                    onClick={handleResetZoom}
-                    title="ری سیٹ"
-                    className="text-[10px] px-1.5 py-0.5 text-stone-400 hover:text-stone-200 bg-stone-800 rounded cursor-pointer"
-                  >
-                    100%
-                  </button>
+                <div className="hidden sm:flex items-center gap-1.5 text-stone-400 text-[11px] bg-stone-900/60 px-2 py-1 rounded-lg border border-stone-800 font-sans">
+                  <BookOpen className="w-3 h-3 text-amber-400" />
+                  <span>کینوس پی ڈی ایف ریڈر</span>
                 </div>
               )}
+
+              {/* Volume Highlights Drawer Button */}
+              <button
+                onClick={() => {
+                  setShowVolumeHighlights(!showVolumeHighlights);
+                  setShowToc(false);
+                }}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors cursor-pointer ${
+                  showVolumeHighlights
+                    ? 'bg-amber-600 text-stone-950 font-bold border-amber-500'
+                    : `${themeStyles.border} ${themeStyles.textMuted} hover:${themeStyles.text}`
+                }`}
+              >
+                <Highlighter className="w-3.5 h-3.5" />
+                <span>ہائی لائٹس ({highlights.filter((h) => h.volumeId === volume?.id).length})</span>
+              </button>
             </div>
 
             {/* Interactive Page Slider Component */}
@@ -928,41 +900,62 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
             </aside>
           )}
 
-          {/* Reader Content Screen (With Touch Swipe Support) */}
-          <div
-            onTouchStart={handleTouchStart}
-            onTouchEnd={handleTouchEnd}
-            className="flex-1 overflow-y-auto p-4 sm:p-8 flex justify-center relative"
-          >
-            {/* Swipe Turn Page Feedback Toast */}
-            {swipeToast && (
-              <div
-                className={`fixed top-1/2 ${
-                  swipeToast.direction === 'left' ? 'left-6 sm:left-12' : 'right-6 sm:right-12'
-                } -translate-y-1/2 z-50 bg-amber-600 text-stone-950 font-bold px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 text-xs border border-amber-300 animate-in fade-in zoom-in duration-150 pointer-events-none`}
-              >
-                {swipeToast.direction === 'left' ? (
-                  <ChevronLeft className="w-4 h-4" />
-                ) : (
-                  <ChevronRight className="w-4 h-4" />
-                )}
-                <span className="font-nastaliq font-bold">{swipeToast.text}</span>
-              </div>
-            )}
+          {/* Reader Content Screen */}
+          {activeMode === 'pdf' ? (
+            /* AUTHENTIC IN-APP HIGH-DPI PDF CANVAS VIEWER */
+            <div className="flex-1 h-full relative overflow-hidden flex flex-col bg-stone-950">
+              <InternalPdfViewer
+                pdfUrl={volume.pdfUrl}
+                archiveItemId={volume.archiveItemId}
+                initialPage={currentPage}
+                totalExpectedPages={totalPages}
+                onPageChange={handlePageChange}
+                onTotalPagesLoaded={(total) => {
+                  setDynamicTotalPages(total);
+                }}
+                theme={theme}
+                volumeTitle={volume.volumeTitleUrdu}
+                volumeId={volume.id}
+                volumeNumber={volume.volumeNumber}
+                isDrawMode={isDrawMode}
+                onCloseDrawMode={() => setIsDrawMode(false)}
+              />
+            </div>
+          ) : (
+            /* SCHOLARLY CHAPTERS & UNICODE TEXT READER */
+            <div
+              onTouchStart={handleTouchStart}
+              onTouchEnd={handleTouchEnd}
+              className="flex-1 overflow-y-auto p-4 sm:p-8 flex justify-center relative"
+            >
+              {/* Swipe Turn Page Feedback Toast */}
+              {swipeToast && (
+                <div
+                  className={`fixed top-1/2 ${
+                    swipeToast.direction === 'left' ? 'left-6 sm:left-12' : 'right-6 sm:right-12'
+                  } -translate-y-1/2 z-50 bg-amber-600 text-stone-950 font-bold px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 text-xs border border-amber-300 animate-in fade-in zoom-in duration-150 pointer-events-none`}
+                >
+                  {swipeToast.direction === 'left' ? (
+                    <ChevronLeft className="w-4 h-4" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" />
+                  )}
+                  <span className="font-nastaliq font-bold">{swipeToast.text}</span>
+                </div>
+              )}
 
-            {/* Swipe Gesture Hint Pill (Fades out automatically) */}
-            {swipeHint && (
-              <div
-                onClick={() => setSwipeHint(false)}
-                className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 bg-stone-900/95 border border-amber-500/50 text-amber-300 px-4 py-1.5 rounded-full shadow-2xl text-[11px] font-sans flex items-center gap-2 backdrop-blur-md cursor-pointer animate-pulse"
-                title="بند کرنے کے لیے کلک کریں"
-              >
-                <span>👈 دائیں یا بائیں سوائپ (Swipe) کر کے صفحات پلٹیں 👉</span>
-              </div>
-            )}
+              {/* Swipe Gesture Hint Pill (Fades out automatically) */}
+              {swipeHint && (
+                <div
+                  onClick={() => setSwipeHint(false)}
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 bg-stone-900/95 border border-amber-500/50 text-amber-300 px-4 py-1.5 rounded-full shadow-2xl text-[11px] font-sans flex items-center gap-2 backdrop-blur-md cursor-pointer animate-pulse"
+                  title="بند کرنے کے لیے کلک کریں"
+                >
+                  <span>👈 دائیں یا بائیں سوائپ (Swipe) کر کے صفحات پلٹیں 👉</span>
+                </div>
+              )}
 
-            {activeMode === 'internal' ? (
-              /* NATIVE URDU BOOK READER CANVAS */
+              {/* NATIVE URDU BOOK READER ARTICLE */}
               <article
                 onMouseUp={handleTextSelection}
                 onTouchEnd={handleTextSelection}
@@ -1061,174 +1054,8 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
                   onCloseDrawMode={() => setIsDrawMode(false)}
                 />
               </article>
-            ) : (
-              /* RAW DIRECT PDF VIEW WITH MANUAL ZOOM CONTROLS */
-              <div className="w-full h-full flex flex-col items-center justify-between relative overflow-hidden">
-                {/* Fallback Notice & Helper */}
-                <div className="w-full bg-stone-900 border border-stone-800 rounded-xl p-2.5 mb-2 flex items-center justify-between text-xs text-stone-300">
-                  <div className="flex items-center gap-2">
-                    <Layers className="w-4 h-4 text-amber-400" />
-                    <span>
-                      پی ڈی ایف فائل ویور: زوم کنٹرولز (+ / -) سے صفحہ بڑا یا چھوٹا کر کے آسانی سے پڑھیں۔
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => setActiveMode('internal')}
-                    className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold px-3 py-1 rounded-lg cursor-pointer whitespace-nowrap text-xs"
-                  >
-                    انٹرنل ریڈر میں پڑھیں
-                  </button>
-                </div>
-
-                {/* PDF Container with Zoom Viewport and Floating Controls */}
-                <div className="w-full flex-1 rounded-2xl overflow-auto border border-stone-800 bg-stone-950 relative flex justify-center">
-                  {/* Floating Manual Zoom and Page Navigation Bar */}
-                  <div className="sticky top-3 z-30 flex items-center gap-2 bg-stone-900/95 backdrop-blur-md border border-stone-700/80 rounded-2xl p-1.5 shadow-2xl h-fit self-start mx-auto mb-2 flex-wrap justify-center max-w-full">
-                    {/* Zoom Buttons */}
-                    <div className="flex items-center gap-0.5 border-r border-stone-800 pr-1.5">
-                      <button
-                        onClick={handleZoomOut}
-                        disabled={pdfZoom <= 50}
-                        title="زوم کم کریں (-)"
-                        className="p-1.5 text-stone-200 hover:text-amber-400 hover:bg-stone-800 disabled:opacity-30 rounded-xl cursor-pointer transition-colors"
-                      >
-                        <ZoomOut className="w-4 h-4" />
-                      </button>
-
-                      <button
-                        onClick={handleResetZoom}
-                        title="اصل سائز ۱۰۰٪ پر واپس لائیں"
-                        className="px-2 py-0.5 text-xs font-mono font-bold text-amber-400 hover:bg-stone-800 rounded-lg cursor-pointer"
-                      >
-                        {pdfZoom}%
-                      </button>
-
-                      <button
-                        onClick={handleZoomIn}
-                        disabled={pdfZoom >= 250}
-                        title="زوم بڑھائیں (+)"
-                        className="p-1.5 text-stone-200 hover:text-amber-400 hover:bg-stone-800 disabled:opacity-30 rounded-xl cursor-pointer transition-colors"
-                      >
-                        <ZoomIn className="w-4 h-4" />
-                      </button>
-
-                      <button
-                        onClick={handleResetZoom}
-                        title="۱۰۰٪ پر ری سیٹ"
-                        className="text-[10px] px-1.5 py-0.5 text-stone-400 hover:text-stone-200 bg-stone-800 rounded cursor-pointer ml-1"
-                      >
-                        100%
-                      </button>
-                    </div>
-
-                    {/* PDF Floating Stepper & Slider */}
-                    <div className="flex items-center gap-1.5 border-r border-stone-800 pr-1.5">
-                      <button
-                        onClick={() => handlePageChange(currentPage - 1)}
-                        disabled={currentPage <= 1}
-                        className="p-1 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 text-stone-200 rounded-lg cursor-pointer"
-                        title="پچھلا صفحہ"
-                      >
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-
-                      <div className="flex items-center gap-1.5 w-24 sm:w-32">
-                        <input
-                          type="range"
-                          min="1"
-                          max={totalPages}
-                          value={sliderValue}
-                          onChange={(e) => {
-                            const val = parseInt(e.target.value, 10);
-                            setSliderValue(val);
-                            setPageInput(val.toString());
-                          }}
-                          onMouseUp={() => handlePageChange(sliderValue)}
-                          onTouchEnd={() => handlePageChange(sliderValue)}
-                          className="w-full h-1.5 bg-stone-950 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                          title={`صفحہ: ${sliderValue} / ${totalPages}`}
-                        />
-                      </div>
-
-                      <button
-                        onClick={() => handlePageChange(currentPage + 1)}
-                        disabled={currentPage >= totalPages}
-                        className="p-1 bg-stone-800 hover:bg-stone-700 disabled:opacity-30 text-stone-200 rounded-lg cursor-pointer"
-                        title="اگلا صفحہ"
-                      >
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    {/* PDF Quick Jump Box */}
-                    <form onSubmit={handleInputSubmit} className="flex items-center gap-1 bg-stone-950 px-2 py-0.5 rounded-lg border border-stone-800">
-                      <span className="text-[10px] text-stone-400 font-sans">صفحہ:</span>
-                      <input
-                        type="number"
-                        min="1"
-                        max={totalPages}
-                        value={pageInput}
-                        onChange={(e) => setPageInput(e.target.value)}
-                        className="w-12 text-center text-xs font-mono font-bold text-amber-300 bg-stone-900 border border-stone-700 rounded px-1 py-0.5 focus:outline-none"
-                      />
-                      <span className="text-[10px] text-stone-500 font-mono">/ {totalPages}</span>
-                      <button
-                        type="submit"
-                        className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
-                      >
-                        جائیں
-                      </button>
-                    </form>
-
-                    {/* Quick Draw Mode Toggle in Floating Bar */}
-                    <button
-                      type="button"
-                      onClick={() => setIsDrawMode(!isDrawMode)}
-                      title={isDrawMode ? 'ڈرائنگ موڈ بند کریں' : 'قلمی یادداشت و ڈرائنگ موڈ'}
-                      className={`flex items-center gap-1 px-2.5 py-1 rounded-xl border text-xs cursor-pointer transition-colors ${
-                        isDrawMode
-                          ? 'bg-amber-600 text-stone-950 font-bold border-amber-400 shadow-md ring-1 ring-amber-400'
-                          : 'bg-stone-800/90 text-stone-300 hover:text-amber-400 hover:bg-stone-700 border-stone-700'
-                      }`}
-                    >
-                      <PenTool className="w-3.5 h-3.5" />
-                      <span className="font-sans text-[11px]">
-                        {isDrawMode ? 'ڈرائنگ فعال' : 'قلم'}
-                      </span>
-                    </button>
-                  </div>
-
-                  {/* Scaled PDF Frame Wrapper with Freehand Drawing Overlay */}
-                  <div
-                    className="absolute inset-0 transition-transform duration-150 origin-top flex items-center justify-center p-1 relative"
-                    style={{
-                      transform: `scale(${pdfZoom / 100})`,
-                      transformOrigin: 'top center',
-                      width: `${Math.max(100, (100 * 100) / pdfZoom)}%`,
-                      height: `${Math.max(100, (100 * 100) / pdfZoom)}%`,
-                    }}
-                  >
-                    <iframe
-                      key={`pdf-${volume.id}-${currentPage}-${pdfZoom}`}
-                      src={`${volume.pdfUrl}#page=${currentPage}&zoom=${pdfZoom}`}
-                      title={`احتساب ناصبیت ${volume.volumeTitleUrdu}`}
-                      className="w-full h-full border-none bg-stone-900 rounded-xl"
-                    />
-
-                    {/* Canvas Overlay directly on top of the PDF! */}
-                    <CanvasDrawer
-                      volumeId={volume.id}
-                      volumeNumber={volume.volumeNumber}
-                      volumeTitleUrdu={volume.volumeTitleUrdu}
-                      currentPage={currentPage}
-                      isDrawMode={isDrawMode}
-                      onCloseDrawMode={() => setIsDrawMode(false)}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         {/* BOTTOM STATUS BAR */}

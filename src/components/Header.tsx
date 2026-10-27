@@ -9,7 +9,8 @@ import {
   ArrowUpLeft,
   Globe,
   GitBranch,
-  Settings
+  Settings,
+  Cloud
 } from 'lucide-react';
 import { ActiveTab } from '../types/book';
 import { Language, TRANSLATIONS } from '../i18n/translations';
@@ -22,6 +23,8 @@ interface HeaderProps {
   onShowSplash: () => void;
   lang: Language;
   onToggleLang: () => void;
+  onSyncCloud?: () => void;
+  isSyncingCloud?: boolean;
 }
 
 const SEARCH_HISTORY_STORAGE_KEY = 'ehtisab_search_history_v1';
@@ -38,6 +41,8 @@ export const Header: React.FC<HeaderProps> = ({
   onShowSplash,
   lang,
   onToggleLang,
+  onSyncCloud,
+  isSyncingCloud,
 }) => {
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -168,6 +173,21 @@ export const Header: React.FC<HeaderProps> = ({
               <Globe className="w-3.5 h-3.5 text-amber-400" />
               <span>{isEn ? 'اردو' : 'English'}</span>
             </button>
+
+            {/* Cloud Sync Button */}
+            {onSyncCloud && (
+              <button
+                onClick={onSyncCloud}
+                disabled={isSyncingCloud}
+                title={isEn ? 'Sync latest books from GitHub cloud' : 'گٹ ہب کلاؤڈ سے تازہ کتب سنک کریں'}
+                className="p-2 text-stone-200 hover:text-emerald-300 bg-stone-900 hover:bg-stone-800 border border-emerald-600/30 rounded-xl text-xs transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm"
+              >
+                <Cloud className={`w-3.5 h-3.5 ${isSyncingCloud ? 'text-amber-400 animate-spin' : 'text-emerald-400'}`} />
+                <span className="hidden md:inline text-[11px] font-sans font-semibold text-emerald-300">
+                  {isSyncingCloud ? (isEn ? 'Syncing...' : 'سنک ہو رہا ہے...') : (isEn ? 'Cloud' : 'کلاؤڈ')}
+                </span>
+              </button>
+            )}
 
             {/* Admin & GitHub Sync Button */}
             <button

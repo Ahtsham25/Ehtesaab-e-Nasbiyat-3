@@ -36,11 +36,11 @@ jobs:
       - name: 📥 Check out repository
         uses: actions/checkout@v4
 
-      - name: ☕ Set up Java 21 (Temurin)
+      - name: ☕ Set up Java 17 LTS (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '17'
           cache: 'gradle'
 
       - name: 🟩 Set up Node.js 20 LTS
@@ -60,13 +60,12 @@ jobs:
           echo "d975f751698a77b662f1254ddbeed3901e1a16db" >> "$ANDROID_HOME/licenses/mips-android-sysimage-license"
           echo "601085b94cd77f6b54b86eebd7773a237e2ee46f" >> "$ANDROID_HOME/licenses/google-gdk-license"
 
-          # Verify sdkmanager and install platform-tools / platform 35 if available
           if command -v sdkmanager &> /dev/null; then
             yes | sdkmanager --licenses || true
-            sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
+            sdkmanager "platforms;android-34" "build-tools;34.0.0" || true
           elif [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
           fi
 
       - name: 📦 Install npm dependencies
@@ -93,13 +92,15 @@ jobs:
 
           if [ "${{ github.event.inputs.build_variant }}" != "debug_only" ]; then
             echo "=== Building Release APK (Debug-signed for direct mobile installation) ==="
-            ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" || echo "Release build skipped or completed with warnings"
+            ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" || echo "Release build completed or optional"
           fi
           cd ..
 
       - name: 📁 Collect & Organize Output APKs
         run: |
           mkdir -p output/apk
+
+          find android/app/build/outputs/apk/ -type f -name "*.apk" -exec ls -lh {} +
 
           if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
             cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-Debug.apk
@@ -133,9 +134,9 @@ jobs:
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| **App Name** | احتساب ناصبیت (Ihtisab-e-Nasbiyat) |" >> $GITHUB_STEP_SUMMARY
           echo "| **Package ID** | \`com.ehtisab.nasbiyat\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Java Version** | 21 (Temurin JDK) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Gradle Version** | 8.14.3 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Android SDK** | 35 (Android 15) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Java Version** | 17 (Temurin JDK) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Gradle Version** | 8.5 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Android SDK** | 34 (Android 14) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### 📲 How to install:" >> $GITHUB_STEP_SUMMARY
           echo "1. Download the \`Ihtisab-e-Nasbiyat-APK\` zip from Artifacts below." >> $GITHUB_STEP_SUMMARY
