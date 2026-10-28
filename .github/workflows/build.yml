@@ -66,9 +66,9 @@ jobs:
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
           fi
 
-      - name: 📦 Install npm dependencies
+      - name: 📦 Check Active Node Version & Install Dependencies
         run: |
-          node -v
+          echo "Current Node version: $(node -v)"
           npm install --legacy-peer-deps --no-audit
 
       - name: 🏗️ Build Web Assets (Vite)
@@ -85,8 +85,11 @@ jobs:
             echo "<html><body><h1>Placeholder</h1></body></html>" > www/index.html
           fi
 
-      - name: 🔄 Sync Capacitor Android
+      - name: 🔄 Initialize & Sync Capacitor Android
         run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
           npm exec cap sync android
 
       - name: 🔑 Make Gradle wrapper executable
