@@ -87,10 +87,19 @@ jobs:
 
       - name: 🔄 Force Recreate & Sync Capacitor Android
         run: |
+          if [ ! -f "capacitor.config.json" ]; then
+            echo "Creating basic capacitor.config.json..."
+            echo '{
+              "appId": "com.ehtisab.nasbiyat",
+              "appName": "Ihtisab-e-Nasbiyat",
+              "webDir": "dist"
+            }' > capacitor.config.json
+          fi
+
           if [ ! -d "android" ] || [ ! -f "android/app/src/main/AndroidManifest.xml" ]; then
             echo "Android platform or Manifest missing. Forcing platform addition..."
             rm -rf android
-            npx @capacitor/cli add android
+            npx @capacitor/cli add android --appId "com.ehtisab.nasbiyat" --appName "Ihtisab-e-Nasbiyat" --web-dir "dist"
           fi
           npm exec cap sync android
 
