@@ -39,11 +39,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: ☕ Set up Java 17 LTS (Temurin)
+      - name: ☕ Set up Java 21 LTS (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
           cache: 'gradle'
 
       - name: 📜 Accept Android SDK Licenses & Prepare Environment
@@ -155,4 +155,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| **App Name** | احتساب ناصبیت (Ihtisab-
+          echo "| **App Name** | احتساب ناصبیت (Ihtisab-e-Nasbiyat) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Package ID** | \`com.ehtisab.nasbiyat\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Java Version** | 21 (Temurin JDK) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Gradle Version** | 8.14.3 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Android SDK** | 34 (Android 14) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 📲 How to install:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the \`Ihtisab-e-Nasbiyat-APK\` zip from Artifacts below." >> $GITHUB_STEP_SUMMARY
+          echo "2. Extract the zip file on your computer or phone." >> $GITHUB_STEP_SUMMARY
+          echo "3. Tap \`Ihtisab-e-Nasbiyat-Debug.apk\` to install directly on any Android device." >> $GITHUB_STEP_SUMMARY
