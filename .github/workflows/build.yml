@@ -85,10 +85,12 @@ jobs:
             echo "<html><body><h1>Placeholder</h1></body></html>" > www/index.html
           fi
 
-      - name: 🔄 Initialize & Sync Capacitor Android
+      - name: 🔄 Force Recreate & Sync Capacitor Android
         run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
+          if [ ! -d "android" ] || [ ! -f "android/app/src/main/AndroidManifest.xml" ]; then
+            echo "Android platform or Manifest missing. Forcing platform addition..."
+            rm -rf android
+            npx @capacitor/cli add android
           fi
           npm exec cap sync android
 
