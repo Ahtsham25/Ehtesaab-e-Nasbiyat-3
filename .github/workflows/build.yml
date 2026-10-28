@@ -33,17 +33,18 @@ jobs:
       - name: 📥 Check out repository
         uses: actions/checkout@v4
 
+      - name: 🟩 Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
       - name: ☕ Set up Java 17 LTS (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
-
-      - name: 🟩 Set up Node.js 22 LTS
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: 📜 Accept Android SDK Licenses & Prepare Environment
         run: |
@@ -65,8 +66,9 @@ jobs:
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
           fi
 
-      - name: 📦 Install npm dependencies
+      - name: 📦 Check Active Node Version & Install Dependencies
         run: |
+          echo "Current Node version: $(node -v)"
           npm install --legacy-peer-deps --no-audit
 
       - name: 🏗️ Build Web Assets (Vite)
@@ -75,7 +77,7 @@ jobs:
 
       - name: 🔄 Sync Capacitor Android
         run: |
-          npx cap sync android
+          npm exec cap sync android
 
       - name: 🔑 Make Gradle wrapper executable
         run: |
@@ -88,7 +90,7 @@ jobs:
           ./gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
 
           if [ "${{ github.event.inputs.build_variant }}" != "debug_only" ]; then
-            echo "=== Building Release APK (Debug-signed for direct mobile installation) ==="
+            echo "=== Building Release APK ==="
             ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" || echo "Release build completed or optional"
           fi
           cd ..
