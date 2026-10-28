@@ -66,14 +66,24 @@ jobs:
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
           fi
 
-      - name: 📦 Check Active Node Version & Install Dependencies
+      - name: 📦 Install npm dependencies
         run: |
-          echo "Current Node version: $(node -v)"
+          node -v
           npm install --legacy-peer-deps --no-audit
 
       - name: 🏗️ Build Web Assets (Vite)
         run: |
           npm run build
+
+      - name: 📁 Ensure Web Assets Directory Exists
+        run: |
+          if [ -d "dist" ] && [ ! -d "www" ]; then
+            cp -r dist www
+            echo "✅ Copied dist to www folder"
+          elif [ ! -d "www" ] && [ ! -d "dist" ]; then
+            mkdir -p www
+            echo "<html><body><h1>Placeholder</h1></body></html>" > www/index.html
+          fi
 
       - name: 🔄 Sync Capacitor Android
         run: |
