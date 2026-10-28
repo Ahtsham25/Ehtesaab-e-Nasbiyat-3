@@ -99,7 +99,7 @@ jobs:
           if [ ! -d "android" ] || [ ! -f "android/app/src/main/AndroidManifest.xml" ]; then
             echo "Android platform or Manifest missing. Forcing platform addition..."
             rm -rf android
-            npx @capacitor/cli add android --appId "com.ehtisab.nasbiyat" --appName "Ihtisab-e-Nasbiyat" --web-dir "dist"
+            npx @capacitor/cli add android
           fi
           npm exec cap sync android
 
@@ -161,7 +161,7 @@ jobs:
           echo "| **Gradle Version** | 8.5 |" >> $GITHUB_STEP_SUMMARY
           echo "| **Android SDK** | 34 (Android 14) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 📲 How to install:" >> $GITHUB_STEP_SUMMARY
+4.          echo "#### 📲 How to install:" >> $GITHUB_STEP_SUMMARY
           echo "1. Download the \`Ihtisab-e-Nasbiyat-APK\` zip from Artifacts below." >> $GITHUB_STEP_SUMMARY
           echo "2. Extract the zip file on your computer or phone." >> $GITHUB_STEP_SUMMARY
           echo "3. Tap \`Ihtisab-e-Nasbiyat-Debug.apk\` to install directly on any Android device." >> $GITHUB_STEP_SUMMARY
