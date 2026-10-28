@@ -36,17 +36,20 @@ jobs:
       - name: 📥 Check out repository
         uses: actions/checkout@v4
 
+      # 1. Set up Node.js 22 FIRST
+      - name: 🟩 Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 2. Set up Java 17 LTS (Temurin)
       - name: ☕ Set up Java 17 LTS (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
-
-      - name: 🟩 Set up Node.js 22 LTS
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: 📜 Accept Android SDK Licenses & Prepare Environment
         run: |
@@ -68,8 +71,10 @@ jobs:
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
           fi
 
-      - name: 📦 Install npm dependencies
+      - name: 📦 Check Node Version & Install npm dependencies
         run: |
+          node -v
+          npm -v
           npm install --legacy-peer-deps --no-audit
 
       - name: 🏗️ Build Web Assets (Vite)
