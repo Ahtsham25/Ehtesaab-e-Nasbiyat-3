@@ -1,6 +1,3 @@
-# This file is kept in sync with .github/workflows/build.yml for convenience.
-# GitHub Actions runs workflows from: .github/workflows/build.yml
-
 name: Build Android APK (احتساب ناصبیت)
 
 on:
@@ -69,10 +66,10 @@ jobs:
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" || true
           fi
 
-      - name: 📦 Check Node Version & Install npm dependencies
+      - name: 📦 Check Active Node Version & Install Dependencies
         run: |
-          node -v
-          npm -v
+          echo "Current Node executable path: $(which node)"
+          echo "Current Node version: $(node -v)"
           npm install --legacy-peer-deps --no-audit
 
       - name: 🏗️ Build Web Assets (Vite)
@@ -81,4 +78,67 @@ jobs:
 
       - name: 🔄 Sync Capacitor Android
         run: |
-          ./node_modules/.
+          ./node_modules/.bin/cap sync android
+
+      - name: 🔑 Make Gradle wrapper executable
+        run: |
+          chmod +x android/gradlew
+
+      - name: 🚀 Compile Android APK via Gradle
+        run: |
+          cd android
+          echo "=== Building Debug APK ==="
+          ./gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
+
+          if [ "${{ github.event.inputs.build_variant }}" != "debug_only" ]; then
+            echo "=== Building Release APK ==="
+            ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" || echo "Release build completed or optional"
+          fi
+          cd ..
+
+      - name: 📁 Collect & Organize Output APKs
+        run: |
+          mkdir -p output/apk
+
+          find android/app/build/outputs/apk/ -type f -name "*.apk" -exec ls -lh {} +
+
+          if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-Debug.apk
+            echo "✅ Found Debug APK"
+          fi
+
+          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk output/apk/Ihtisab-e-Nasbiyat-Release.apk
+            echo "✅ Found Release APK"
+          elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/apk/Ihtisab-e-Nasbiyat-Release-unsigned.apk
+            echo "✅ Found Unsigned Release APK"
+          fi
+
+          echo "=== Generated Files in output/apk ==="
+          ls -lh output/apk/
+          sha256sum output/apk/*.apk || true
+
+      - name: 📤 Upload APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ihtisab-e-Nasbiyat-APK
+          path: output/apk/*.apk
+          retention-days: 30
+
+      - name: 📋 Build Summary Report
+        run: |
+          echo "### 🎉 Android APK Build Succeeded!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **App Name** | احتساب ناصبیت (Ihtisab-e-Nasbiyat) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Package ID** | \`com.ehtisab.nasbiyat\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Java Version** | 17 (Temurin JDK) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Gradle Version** | 8.5 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Android SDK** | 34 (Android 14) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 📲 How to install:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the \`Ihtisab-e-Nasbiyat-APK\` zip from Artifacts below." >> $GITHUB_STEP_SUMMARY
+          echo "2. Extract the zip file on your computer or phone." >> $GITHUB_STEP_SUMMARY
+          echo "3. Tap \`Ihtisab-e-Nasbiyat-Debug.apk\` to install directly on any Android device." >> $GITHUB_STEP_SUMMARY
