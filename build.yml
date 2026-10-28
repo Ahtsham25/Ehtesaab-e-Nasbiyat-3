@@ -36,14 +36,12 @@ jobs:
       - name: 📥 Check out repository
         uses: actions/checkout@v4
 
-      # 1. Set up Node.js 22 FIRST
       - name: 🟩 Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
 
-      # 2. Set up Java 17 LTS (Temurin)
       - name: ☕ Set up Java 17 LTS (Temurin)
         uses: actions/setup-java@v4
         with:
@@ -83,7 +81,7 @@ jobs:
 
       - name: 🔄 Sync Capacitor Android
         run: |
-          npx cap sync android
+          npm exec cap sync android
 
       - name: 🔑 Make Gradle wrapper executable
         run: |
