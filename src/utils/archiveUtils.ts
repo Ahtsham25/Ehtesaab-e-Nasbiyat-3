@@ -1,7 +1,7 @@
 export function extractArchiveId(urlOrId: string): string {
   if (!urlOrId) return '';
   const trimmed = urlOrId.trim();
-  const match = trimmed.match(/archive\.org\/(?:details|download)\/([^\/\?#]+)/i);
+  const match = trimmed.match(/archive\.org\/(?:details|download|items)\/([^\/\?#]+)/i);
   if (match && match[1]) {
     return match[1];
   }
@@ -15,91 +15,94 @@ export const VERIFIED_ARCHIVE_VOLUMES: Record<number, {
   pdfFilename: string;
 }> = {
   1: {
-    archiveId: '1_20261016_20261016_1311',
-    pdfUrl: 'https://archive.org/download/1_20261016_20261016_1311/احتساب_ناصبیت_جلد_1.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-1',
+    pdfUrl: 'https://ia800903.us.archive.org/2/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-1/ehtesabe-nasbiat-by-allah-wasaya-deobandi-1.pdf',
     pageCount: 476,
-    pdfFilename: 'احتساب_ناصبیت_جلد_1.pdf',
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-1.pdf',
   },
   2: {
-    archiveId: '2_20261019_20261019_1042',
-    pdfUrl: 'https://archive.org/download/2_20261019_20261019_1042/احتساب_ناصبیت_جلد_2.pdf',
-    pageCount: 512,
-    pdfFilename: 'احتساب_ناصبیت_جلد_2.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-2',
+    pdfUrl: 'https://ia801804.us.archive.org/4/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-2/ehtesabe-nasbiat-by-allah-wasaya-deobandi-2.pdf',
+    pageCount: 531,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-2.pdf',
   },
   3: {
-    archiveId: '3_20261015_20261015_1332',
-    pdfUrl: 'https://archive.org/download/3_20261015_20261015_1332/احتساب ناصبیت 3.pdf',
-    pageCount: 480,
-    pdfFilename: 'احتساب ناصبیت 3.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-3',
+    pdfUrl: 'https://ia801608.us.archive.org/35/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-3/ehtesabe-nasbiat-by-allah-wasaya-deobandi-3.pdf',
+    pageCount: 508,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-3.pdf',
   },
   4: {
-    archiveId: '4_20261019_20261019_1711',
-    pdfUrl: 'https://archive.org/download/4_20261019_20261019_1711/احتساب ناصبیت جلد 4.pdf',
-    pageCount: 520,
-    pdfFilename: 'احتساب ناصبیت جلد 4.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-4',
+    pdfUrl: 'https://ia601600.us.archive.org/25/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-4/ehtesabe-nasbiat-by-allah-wasaya-deobandi-4.pdf',
+    pageCount: 500,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-4.pdf',
   },
   5: {
-    archiveId: '5_20261015',
-    pdfUrl: 'https://archive.org/download/5_20261015/احتساب ناصبیت 5.pdf',
-    pageCount: 490,
-    pdfFilename: 'احتساب ناصبیت 5.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-5',
+    pdfUrl: 'https://ia800806.us.archive.org/9/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-5/ehtesabe-nasbiat-by-allah-wasaya-deobandi-5.pdf',
+    pageCount: 524,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-5.pdf',
   },
   6: {
-    archiveId: '6_20261019_20261019_1726',
-    pdfUrl: 'https://archive.org/download/6_20261019_20261019_1726/احتساب ناصبیت جلد 6.pdf',
-    pageCount: 530,
-    pdfFilename: 'احتساب ناصبیت جلد 6.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-6',
+    pdfUrl: 'https://ia803106.us.archive.org/26/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-6/ehtesabe-nasbiat-by-allah-wasaya-deobandi-6.pdf',
+    pageCount: 500,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-6.pdf',
   },
   7: {
-    archiveId: '7_20261019_20261019_1737',
-    pdfUrl: 'https://archive.org/download/7_20261019_20261019_1737/احتساب ناصبیت جلد 7.pdf',
-    pageCount: 560,
-    pdfFilename: 'احتساب ناصبیت جلد 7.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-7',
+    pdfUrl: 'https://ia803108.us.archive.org/23/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-7/ehtesabe-nasbiat-by-allah-wasaya-deobandi-7.pdf',
+    pageCount: 516,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-7.pdf',
   },
   8: {
-    archiveId: '8_20261015_20261015_1342',
-    pdfUrl: 'https://archive.org/download/8_20261015_20261015_1342/احتساب ناصبیت 8.pdf',
-    pageCount: 470,
-    pdfFilename: 'احتساب ناصبیت 8.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-8',
+    pdfUrl: 'https://ia600901.us.archive.org/34/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-8/ehtesabe-nasbiat-by-allah-wasaya-deobandi-8.pdf',
+    pageCount: 508,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-8.pdf',
   },
   9: {
-    archiveId: '9_20261015_20261015_1343',
-    pdfUrl: 'https://archive.org/download/9_20261015_20261015_1343/احتساب ناصبیت جلد 9.pdf',
-    pageCount: 510,
-    pdfFilename: 'احتساب ناصبیت جلد 9.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-9',
+    pdfUrl: 'https://ia801607.us.archive.org/11/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-9/ehtesabe-nasbiat-by-allah-wasaya-deobandi-9.pdf',
+    pageCount: 492,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-9.pdf',
   },
   10: {
-    archiveId: '10_20261016_20261016_1418',
-    pdfUrl: 'https://archive.org/download/10_20261016_20261016_1418/احتساب ناصبیت 10.pdf',
-    pageCount: 460,
-    pdfFilename: 'احتساب ناصبیت 10.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-10',
+    pdfUrl: 'https://ia903107.us.archive.org/0/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-10/ehtesabe-nasbiat-by-allah-wasaya-deobandi-10.pdf',
+    pageCount: 468,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-10.pdf',
   },
   11: {
-    archiveId: '11_20261016',
-    pdfUrl: 'https://archive.org/download/11_20261016/احتساب ناصبیت 11.pdf',
-    pageCount: 480,
-    pdfFilename: 'احتساب ناصبیت 11.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-11',
+    pdfUrl: 'https://ia600103.us.archive.org/30/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-11/ehtesabe-nasbiat-by-allah-wasaya-deobandi-11.pdf',
+    pageCount: 500,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-11.pdf',
   },
   12: {
-    archiveId: '12_20261015_20261015',
-    pdfUrl: 'https://archive.org/download/12_20261015_20261015/احتساب ناصبیت جلد 12.pdf',
-    pageCount: 540,
-    pdfFilename: 'احتساب ناصبیت جلد 12.pdf',
+    archiveId: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-12',
+    pdfUrl: 'https://ia803105.us.archive.org/11/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-12/ehtesabe-nasbiat-by-allah-wasaya-deobandi-12.pdf',
+    pageCount: 468,
+    pdfFilename: 'ehtesabe-nasbiat-by-allah-wasaya-deobandi-12.pdf',
   },
 };
 
 export function resolveVolumeArchiveId(volumeNumber: number, existingId?: string): string {
-  if (existingId && !existingId.includes('ehtisab-e-nasbiyat-vol-') && !existingId.includes('placeholder')) {
+  if (existingId && existingId.trim() && !existingId.includes('placeholder')) {
     return extractArchiveId(existingId);
   }
-  return VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.archiveId || '1_20261016_20261016_1311';
+  return VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.archiveId || `ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volumeNumber}`;
 }
 
 export function resolveVolumePdfUrl(volumeNumber: number, existingUrl?: string): string {
-  if (existingUrl && !existingUrl.includes('ehtisab-e-nasbiyat-vol-') && existingUrl.endsWith('.pdf')) {
-    return existingUrl;
+  if (VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.pdfUrl) {
+    return VERIFIED_ARCHIVE_VOLUMES[volumeNumber].pdfUrl;
   }
-  return VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.pdfUrl || '';
+  if (existingUrl && existingUrl.trim() && existingUrl.includes('archive.org')) {
+    return existingUrl.trim();
+  }
+  return `https://ia800903.us.archive.org/2/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volumeNumber}/ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volumeNumber}.pdf`;
 }
 
 export function getArchivePageImageUrl(archiveId: string, pageNumber: number): string {

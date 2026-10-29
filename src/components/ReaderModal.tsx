@@ -90,6 +90,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   volumeRef.current = volume;
   const loadedVolumeIdRef = useRef<number | null>(null);
   const loadingInProgressRef = useRef<boolean>(false);
+  const docRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
 
   // Verified URL & Archive IDs
   const archiveId = volume ? resolveVolumeArchiveId(volume.volumeNumber, volume.archiveItemId) : '1_20261016_20261016_1311';
@@ -106,7 +107,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     if (!vol) return;
 
     // CRITICAL: If this book volume is already fully loaded in memory, DO NOT reload or reset state!
-    if (!forceReload && loadedVolumeIdRef.current === vol.id && doc) {
+    if (!forceReload && loadedVolumeIdRef.current === vol.id && docRef.current) {
       return;
     }
 
@@ -127,9 +128,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
       const storedRecord = await getBookFromInternalStorage(vol.id);
       let buffer: ArrayBuffer | null = null;
 
-      if (storedRecord && storedRecord.blob) {
+      if (storedRecord && storedRecord.blob && storedRecord.blob.size > 100000) {
         setLoadingStatus('انٹرنل اسٹوریج سے کتاب کے اوراق لوڈ ہو رہے ہیں...');
-        setLoadingProgress(90);
+        setLoadingProgress(95);
         buffer = await storedRecord.blob.arrayBuffer();
       }
 
@@ -141,17 +142,19 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           setLoadingStatus(`کتاب ڈاؤن لوڈ ہو رہی ہے: ${pct}%`);
         });
 
-        // Save downloaded blob in IndexedDB for instant future access
-        try {
-          await saveBookToInternalStorage({
-            volumeId: vol.id,
-            volumeNumber: vol.volumeNumber,
-            titleUrdu: vol.volumeTitleUrdu,
-            fileSize: vol.fileSize || '35 MB',
-            downloadedAt: new Date().toLocaleDateString('ur-PK'),
-            blob: new Blob([buffer], { type: 'application/pdf' }),
-          });
-        } catch {}
+        // Save downloaded blob in IndexedDB for instant future access if valid size
+        if (buffer && buffer.byteLength > 100000) {
+          try {
+            await saveBookToInternalStorage({
+              volumeId: vol.id,
+              volumeNumber: vol.volumeNumber,
+              titleUrdu: vol.volumeTitleUrdu,
+              fileSize: vol.fileSize || `${Math.round(buffer.byteLength / (1024 * 1024))} MB`,
+              downloadedAt: new Date().toLocaleDateString('ur-PK'),
+              blob: new Blob([buffer], { type: 'application/pdf' }),
+            });
+          } catch {}
+        }
       }
 
       // 3. Initialize PDF.js Document from 100% loaded buffer
@@ -159,6 +162,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
       setLoadingStatus('کتاب کے اوراق مکمل تیار ہو چکے ہیں...');
 
       const loadedDoc = await loadPdfDocument({ data: buffer });
+      docRef.current = loadedDoc;
       setDoc(loadedDoc);
       loadedVolumeIdRef.current = vol.id;
       const total = loadedDoc.numPages || vol.pageCount || 476;
@@ -174,7 +178,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     } finally {
       loadingInProgressRef.current = false;
     }
-  }, [realPdfUrl, doc]);
+  }, [realPdfUrl]);
 
   // Initial load - ONLY executes when book volume ID changes, NEVER on page turns
   useEffect(() => {
@@ -715,7 +719,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
             {/* Bottom Page Footer */}
             <div className="border-t border-stone-300 pt-3 flex items-center justify-between text-stone-500 text-xs font-sans">
               <span>اشاعت: دار التحقیق</span>
-              <span className="font-mono font-bold text-stone-700">صفحہ ۱</span>
+              <span className="font-mono font-bold text-stone-700">صفحہ {currentPage}</span>
               <span>تمام اوراق محفوظ</span>
             </div>
           </div>

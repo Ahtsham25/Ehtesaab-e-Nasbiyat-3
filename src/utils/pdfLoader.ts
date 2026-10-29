@@ -24,36 +24,45 @@ export function normalizePdfUrl(url: string): string {
 }
 
 /**
- * Fetch PDF with automated fallback through reliable CORS proxies if direct download is restricted
+ * Fetch PDF as ArrayBuffer with progress tracking and automatic reliable fallbacks
  */
 export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number) => void): Promise<ArrayBuffer> {
-  // If it's a relative local URL like /data/sample-preview.pdf
-  if (url.startsWith('/') || url.startsWith('./')) {
-    const res = await fetch(url);
+  const cleanUrl = normalizePdfUrl(url);
+
+  // If it's a relative local URL
+  if (cleanUrl.startsWith('/') || cleanUrl.startsWith('./')) {
+    const res = await fetch(cleanUrl);
     if (!res.ok) throw new Error(`مقامی فائل نہیں مل سکی (${res.status})`);
     if (onProgress) onProgress(100);
     return await res.arrayBuffer();
   }
 
-  const sources = [
-    // 1. Server-side streaming proxy (fastest, zero CORS restrictions)
-    `/api/pdf-proxy?url=${encodeURIComponent(url)}`,
-    // 2. Direct fetch
-    url,
-    // 3. CORS Proxy via corsproxy.io
-    `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-    // 4. CORS Proxy via allorigins
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  ];
+  // Construct sources ordered by speed and reliability
+  const sources: string[] = [];
+
+  // 1. Direct proxy route via local Express server
+  sources.push(`/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`);
+
+  // 2. Direct client fetch (works great on mobile / client if CORS allowed)
+  sources.push(cleanUrl);
+
+  // 3. Fallback to ia800903 if different
+  if (cleanUrl.includes('archive.org') && !cleanUrl.includes('ia800903')) {
+    const match = cleanUrl.match(/archive\.org\/(?:download|items)\/([^\/\?#]+)(?:\/([^\?#]+))?/i);
+    if (match && match[1]) {
+      const fn = match[2] ? decodeURIComponent(match[2]) : `${match[1]}.pdf`;
+      sources.push(`/api/pdf-proxy?url=${encodeURIComponent(`https://ia800903.us.archive.org/2/items/${match[1]}/${fn}`)}`);
+    }
+  }
 
   let lastError: Error | null = null;
 
   for (let i = 0; i < sources.length; i++) {
     const targetUrl = sources[i];
     try {
-      // Use AbortController with generous timeout for full PDF book streaming
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      // 30 seconds per attempt
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
 
       const response = await fetch(targetUrl, {
         method: 'GET',
@@ -65,21 +74,20 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
 
       clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        lastError = new Error(`سرور کا جواب: ${response.status} (${response.statusText})`);
+      if (!response.ok && response.status !== 206) {
+        lastError = new Error(`سرور جواب: ${response.status} (${response.statusText})`);
         continue;
       }
 
-      // Check if response is actually HTML error page instead of PDF
+      // Verify content type isn't HTML error page
       const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('text/html') || contentType.includes('application/json')) {
-        // Not a PDF, server returned an HTML error page (e.g. 503 or 404 from Archive.org)
-        lastError = new Error('فراہم کردہ لنک پر پی ڈی ایف فائل موجود نہیں ہے (سرور نے ایرر پیج واپس کیا)۔');
+      if (contentType.includes('text/html')) {
+        lastError = new Error('پی ڈی ایف دستیاب نہیں (سرور نے ایرر پیج واپس کیا)');
         continue;
       }
 
       const contentLength = response.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : 0;
+      const total = contentLength ? parseInt(contentLength, 10) : 14 * 1024 * 1024;
 
       if (!response.body) {
         const buffer = await response.arrayBuffer();
@@ -87,7 +95,6 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
         return buffer;
       }
 
-      // Stream read with progress
       const reader = response.body.getReader();
       const chunks: Uint8Array[] = [];
       let received = 0;
@@ -98,8 +105,9 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
         if (value) {
           chunks.push(value);
           received += value.length;
-          if (total > 0 && onProgress) {
-            onProgress(Math.min(99, Math.round((received / total) * 100)));
+          if (onProgress) {
+            const pct = Math.min(99, Math.max(5, Math.round((received / total) * 100)));
+            onProgress(pct);
           }
         }
       }
@@ -120,7 +128,7 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
     }
   }
 
-  throw lastError || new Error('پی ڈی ایف فائل ڈاؤن لوڈ نہیں ہو سکی۔ برائے مہربانی اپنا انٹرنیٹ چیک کریں یا ڈیوائس سے فائل منتخب کریں۔');
+  throw lastError || new Error('کتاب ڈاؤن لوڈ نہیں ہو سکی۔ برائے مہربانی انٹرنیٹ چیک فرمائیں یا دوبارہ کوشش کریں۔');
 }
 
 /**
@@ -144,13 +152,13 @@ export async function loadPdfDocument(
     throw new Error('پی ڈی ایف کا کوئی لنک یا فائل فراہم نہیں کی گئی۔');
   }
 
-  // Check cache
+  // Check memory cache
   if (docCache.has(source.url)) {
     if (onProgress) onProgress(100);
     return docCache.get(source.url)!;
   }
 
-  // If local blob URL or data URL, pass directly to getDocument
+  // If local blob URL or data URL
   if (source.url.startsWith('blob:') || source.url.startsWith('data:')) {
     const loadingTask = pdfjsLib.getDocument({
       url: source.url,
@@ -161,7 +169,7 @@ export async function loadPdfDocument(
     return doc;
   }
 
-  // Fetch as ArrayBuffer with CORS proxy support & progress
+  // Fetch as ArrayBuffer with progress
   const arrayBuffer = await fetchPdfArrayBuffer(source.url, onProgress);
 
   const loadingTask = pdfjsLib.getDocument({
