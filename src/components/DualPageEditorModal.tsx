@@ -8,6 +8,8 @@ interface DualPageEditorModalProps {
   onClose: () => void;
   onPageChange?: (page: number) => void;
   onVolumeChange?: (volume: VolumeData) => void;
+  initialPageImage?: string;
+  pdfDoc?: any;
 }
 
 export const DualPageEditorModal: React.FC<DualPageEditorModalProps> = (props) => {

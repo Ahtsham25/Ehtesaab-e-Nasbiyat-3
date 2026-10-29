@@ -69,6 +69,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   const [theme, setTheme] = useState<ReaderTheme>('day');
   const [isDrawMode, setIsDrawMode] = useState<boolean>(false);
   const [showDualEditor, setShowDualEditor] = useState<boolean>(false);
+  const [capturedPageDataUrl, setCapturedPageDataUrl] = useState<string | null>(null);
   const [showOptionsMenu, setShowOptionsMenu] = useState<boolean>(false);
   const [rotation, setRotation] = useState<number>(0);
   const [zoomLevel, setZoomLevel] = useState<number>(100);
@@ -397,6 +398,14 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   };
 
   const handleSnipTool = () => {
+    if (canvasRef.current) {
+      try {
+        const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.95);
+        setCapturedPageDataUrl(dataUrl);
+      } catch (e) {
+        console.warn('Canvas capture error:', e);
+      }
+    }
     setShowDualEditor(true);
   };
 
@@ -785,7 +794,12 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
         <DualPageEditorModal
           volume={volume}
           currentPage={currentPage}
-          onClose={() => setShowDualEditor(false)}
+          initialPageImage={capturedPageDataUrl || undefined}
+          pdfDoc={docRef.current || doc}
+          onClose={() => {
+            setShowDualEditor(false);
+            setCapturedPageDataUrl(null);
+          }}
         />
       )}
     </div>

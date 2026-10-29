@@ -23,18 +23,22 @@ import {
   BookOpen,
   ArrowUp,
   ArrowDown,
-  ArrowLeft
+  ArrowLeft,
+  Loader2
 } from 'lucide-react';
 import { VolumeData } from '../types/book';
 import { DEFAULT_VOLUMES } from '../data/defaultVolumes';
 import {
   resolveVolumeArchiveId,
-  getArchivePageImageUrl
+  resolveVolumePdfUrl,
 } from '../utils/archiveUtils';
+import { loadPdfDocument, renderPageToDataUrl } from '../utils/pdfLoader';
 
 interface ScreenEditorModalProps {
   volume: VolumeData;
   currentPage: number;
+  initialPageImage?: string;
+  pdfDoc?: any;
   onClose: () => void;
   onPageChange?: (page: number) => void;
   onVolumeChange?: (volume: VolumeData) => void;
@@ -83,13 +87,26 @@ const COLOR_OPTIONS = [
 export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   volume: initialVolume,
   currentPage: initialPage,
+  initialPageImage,
+  pdfDoc,
   onClose,
   onPageChange,
   onVolumeChange,
 }) => {
   const [activeVolume, setActiveVolume] = useState<VolumeData>(initialVolume || DEFAULT_VOLUMES[0]);
   const [currentPage, setCurrentPage] = useState<number>(initialPage || 1);
-  const [titlePageNumber, setTitlePageNumber] = useState<number>(1);
+
+  // Real rendered page image for the target page
+  const [refPageImage, setRefPageImage] = useState<string>(initialPageImage || '');
+  const [isRenderingRefPage, setIsRenderingRefPage] = useState<boolean>(!initialPageImage);
+
+  // Cover image mode: Archive Cover ('archive_cover') or Page 1 Title Page ('title_page')
+  const [coverMode, setCoverMode] = useState<'archive_cover' | 'title_page'>('archive_cover');
+  const [titlePageImage, setTitlePageImage] = useState<string>('');
+  const [isRenderingCover, setIsRenderingCover] = useState<boolean>(false);
+
+  // Cached active PDF document proxy
+  const docProxyRef = useRef<any>(pdfDoc || null);
 
   // Active Tool: 'highlight' | 'box' | 'line' | 'text' | 'move'
   const [activeTool, setActiveTool] = useState<'highlight' | 'box' | 'line' | 'text' | 'move'>('text');
@@ -151,16 +168,105 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     setTimeout(() => setToastMsg(null), 2500);
   };
 
-  // Archive Identifier & Real Book Page Images
+  // Archive Identifier & Real Book Cover Image
   const archiveId = resolveVolumeArchiveId(activeVolume.volumeNumber, activeVolume.archiveItemId);
-  const titlePageImgUrl = getArchivePageImageUrl(archiveId, titlePageNumber);
-  const refPageImgUrl = getArchivePageImageUrl(archiveId, currentPage);
+  const rawCoverUrl = activeVolume.coverImageUrl || `https://archive.org/services/img/${archiveId}`;
+  const proxiedCoverUrl = `/api/image-proxy?url=${encodeURIComponent(rawCoverUrl)}`;
 
   // Top space and total sheet height calculations
   const topSpacePx =
     topSpaceOption === '0' ? 24 : topSpaceOption === '10' ? 55 : topSpaceOption === '20' ? 85 : 120;
   const bottomSpacePx = 48;
   const totalSheetHeight = PAGE_HEIGHT + topSpacePx + bottomSpacePx;
+
+  // Render Target Reading Page
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function getDocumentProxy() {
+      if (docProxyRef.current) return docProxyRef.current;
+      if (pdfDoc && activeVolume.id === initialVolume?.id) {
+        docProxyRef.current = pdfDoc;
+        return pdfDoc;
+      }
+      try {
+        const pdfUrl = resolveVolumePdfUrl(activeVolume.volumeNumber, activeVolume.pdfUrl);
+        const loaded = await loadPdfDocument({ url: pdfUrl });
+        if (!isCancelled) {
+          docProxyRef.current = loaded;
+        }
+        return loaded;
+      } catch (err) {
+        console.warn('Failed to load PDF in editor:', err);
+        return null;
+      }
+    }
+
+    async function renderPage() {
+      // If we already have the exact pre-rendered snapshot from the reader
+      if (initialPageImage && activeVolume.id === initialVolume?.id && currentPage === initialPage) {
+        setRefPageImage(initialPageImage);
+        setIsRenderingRefPage(false);
+        return;
+      }
+
+      setIsRenderingRefPage(true);
+      try {
+        const doc = await getDocumentProxy();
+        if (doc && !isCancelled) {
+          const renderedUrl = await renderPageToDataUrl(doc, currentPage, 800);
+          if (!isCancelled) {
+            setRefPageImage(renderedUrl);
+          }
+        }
+      } catch (err) {
+        console.warn('Error rendering page:', err);
+      } finally {
+        if (!isCancelled) {
+          setIsRenderingRefPage(false);
+        }
+      }
+    }
+
+    renderPage();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeVolume, currentPage, initialPageImage, initialPage, initialVolume, pdfDoc]);
+
+  // Render Title Page (Page 1) when title_page mode is requested
+  useEffect(() => {
+    let isCancelled = false;
+    if (coverMode === 'title_page' && !titlePageImage) {
+      setIsRenderingCover(true);
+      (async () => {
+        try {
+          let doc = docProxyRef.current;
+          if (!doc) {
+            const pdfUrl = resolveVolumePdfUrl(activeVolume.volumeNumber, activeVolume.pdfUrl);
+            doc = await loadPdfDocument({ url: pdfUrl });
+            if (!isCancelled) docProxyRef.current = doc;
+          }
+          if (doc && !isCancelled) {
+            const p1 = await renderPageToDataUrl(doc, 1, 800);
+            if (!isCancelled) {
+              setTitlePageImage(p1);
+            }
+          }
+        } catch (err) {
+          console.warn('Error rendering title page:', err);
+        } finally {
+          if (!isCancelled) {
+            setIsRenderingCover(false);
+          }
+        }
+      })();
+    }
+    return () => {
+      isCancelled = true;
+    };
+  }, [coverMode, activeVolume, titlePageImage]);
 
   // Responsive container measuring
   useEffect(() => {
@@ -541,6 +647,10 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
       // Helper function to load image
       const loadImage = (url: string): Promise<HTMLImageElement> =>
         new Promise((resolve, reject) => {
+          if (!url) {
+            reject(new Error('Empty image URL'));
+            return;
+          }
           const img = new Image();
           img.crossOrigin = 'anonymous';
           img.onload = () => resolve(img);
@@ -548,27 +658,41 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
           img.src = url;
         });
 
-      // Try loading real book images
+      const targetRefUrl = refPageImage;
+      const targetCoverUrl = coverMode === 'title_page' && titlePageImage ? titlePageImage : proxiedCoverUrl;
+
+      // Draw real book images
       try {
-        const [imgRef, imgTitle] = await Promise.all([
-          loadImage(refPageImgUrl),
-          loadImage(titlePageImgUrl),
+        const [imgRef, imgCover] = await Promise.all([
+          loadImage(targetRefUrl),
+          loadImage(targetCoverUrl),
         ]);
 
-        // Draw Reference Page (Right in RTL: x: 350, y: topSpacePx)
+        // Draw Reference Page (Right in RTL: x: 355, y: topSpacePx)
         ctx.drawImage(imgRef, 355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
         ctx.strokeStyle = '#d1d5db';
         ctx.lineWidth = 1;
         ctx.strokeRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
 
-        // Draw Title Page (Left in RTL: x: 30, y: topSpacePx)
-        ctx.drawImage(imgTitle, 30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        // Draw Title / Cover Page (Left in RTL: x: 30, y: topSpacePx)
+        ctx.drawImage(imgCover, 30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
         ctx.strokeRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-      } catch {
-        // Fallback placeholder borders
-        ctx.fillStyle = '#f9fafb';
-        ctx.fillRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-        ctx.fillRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+      } catch (e) {
+        console.warn('Some images could not be loaded together:', e);
+        try {
+          if (targetRefUrl) {
+            const imgRef = await loadImage(targetRefUrl);
+            ctx.drawImage(imgRef, 355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+            ctx.strokeRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+          }
+        } catch {}
+        try {
+          if (targetCoverUrl) {
+            const imgCover = await loadImage(targetCoverUrl);
+            ctx.drawImage(imgCover, 30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+            ctx.strokeRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+          }
+        } catch {}
       }
 
       // 2. Draw canvas drawing strokes
@@ -968,7 +1092,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
               </span>
             </div>
 
-            {/* REAL DUAL PAGES: (Side 1: Real Reference Page) + (Side 2: Real Volume Title Page) */}
+            {/* REAL DUAL PAGES: (Side 1: Real Reference Page) + (Side 2: Real Volume Cover / Title Page) */}
             <div className="flex items-center justify-center gap-4 px-4 my-auto relative z-10">
               {/* PAGE 1: Reference Content Page (Right Side in RTL) */}
               <div
@@ -980,17 +1104,25 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                   <span className="font-mono">ص {currentPage}</span>
                 </div>
 
-                {/* Scanned Book Page Image directly from Archive.org */}
+                {/* Scanned / Rendered Book Page Image */}
                 <div className="flex-1 w-full relative overflow-hidden bg-white flex items-center justify-center">
-                  <img
-                    src={refPageImgUrl}
-                    alt={`صفحہ ${currentPage}`}
-                    crossOrigin="anonymous"
-                    className="max-w-full max-h-full object-contain"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = '/app-logo.png';
-                    }}
-                  />
+                  {isRenderingRefPage ? (
+                    <div className="flex flex-col items-center justify-center gap-2 p-4 text-center">
+                      <Loader2 className="w-6 h-6 text-emerald-600 animate-spin" />
+                      <span className="text-[11px] text-stone-500 font-nastaliq">صفحہ تیار ہو رہا ہے...</span>
+                    </div>
+                  ) : refPageImage ? (
+                    <img
+                      src={refPageImage}
+                      alt={`صفحہ ${currentPage}`}
+                      crossOrigin="anonymous"
+                      className="max-w-full max-h-full object-contain"
+                    />
+                  ) : (
+                    <div className="text-center p-3 text-stone-400 text-xs font-nastaliq">
+                      صفحہ دستیاب نہیں ہے
+                    </div>
+                  )}
                 </div>
 
                 <div className="text-center text-[10px] text-stone-600 font-mono py-0.5 bg-stone-50 border-t border-stone-100">
@@ -1004,21 +1136,53 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                 className="bg-white rounded p-1 border border-stone-300 shadow-md flex flex-col justify-between overflow-hidden shrink-0 relative"
               >
                 <div className="text-[10px] text-stone-500 font-sans px-2 py-0.5 flex justify-between items-center border-b border-stone-100 bg-stone-50">
-                  <span className="font-bold text-emerald-700">ٹائٹل / سرورق</span>
-                  <span className="font-mono">ص {titlePageNumber}</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setCoverMode('archive_cover')}
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-bold cursor-pointer transition-colors ${
+                        coverMode === 'archive_cover'
+                          ? 'bg-emerald-700 text-white'
+                          : 'text-stone-600 hover:bg-stone-200'
+                      }`}
+                      title="آرکائیو پر موجود اصل سرورق"
+                    >
+                      سرورقِ جلد
+                    </button>
+                    <button
+                      onClick={() => setCoverMode('title_page')}
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-bold cursor-pointer transition-colors ${
+                        coverMode === 'title_page'
+                          ? 'bg-emerald-700 text-white'
+                          : 'text-stone-600 hover:bg-stone-200'
+                      }`}
+                      title="کتاب کا پہلا ٹائٹل صفحہ"
+                    >
+                      صفحہ اول
+                    </button>
+                  </div>
+                  <span className="font-mono text-emerald-800 font-bold">
+                    {coverMode === 'archive_cover' ? `جلد ${activeVolume.volumeNumber}` : `ص ۱`}
+                  </span>
                 </div>
 
-                {/* Scanned Title Page Image directly from Archive.org */}
+                {/* Scanned / Proxied Title / Cover Image */}
                 <div className="flex-1 w-full relative overflow-hidden bg-white flex items-center justify-center">
-                  <img
-                    src={titlePageImgUrl}
-                    alt="ٹائٹل پیج"
-                    crossOrigin="anonymous"
-                    className="max-w-full max-h-full object-contain"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = '/app-logo.png';
-                    }}
-                  />
+                  {isRenderingCover ? (
+                    <div className="flex flex-col items-center justify-center gap-2 p-4 text-center">
+                      <Loader2 className="w-6 h-6 text-emerald-600 animate-spin" />
+                      <span className="text-[11px] text-stone-500 font-nastaliq">سرورق تیار ہو رہا ہے...</span>
+                    </div>
+                  ) : (
+                    <img
+                      src={coverMode === 'title_page' && titlePageImage ? titlePageImage : proxiedCoverUrl}
+                      alt="سرورق کتاب"
+                      crossOrigin="anonymous"
+                      className="max-w-full max-h-full object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/app-logo.png';
+                      }}
+                    />
+                  )}
                 </div>
 
                 <div className="text-center text-[10px] text-stone-600 font-mono py-0.5 bg-stone-50 border-t border-stone-100">

@@ -182,3 +182,30 @@ export async function loadPdfDocument(
   docCache.set(source.url, doc);
   return doc;
 }
+
+/**
+ * Render a specific page of a PDF document to a JPEG data URL
+ */
+export async function renderPageToDataUrl(
+  doc: pdfjsLib.PDFDocumentProxy,
+  pageNumber: number,
+  targetWidth = 600
+): Promise<string> {
+  const page = await doc.getPage(pageNumber);
+  const unscaledViewport = page.getViewport({ scale: 1 });
+  const scale = targetWidth / unscaledViewport.width;
+  const viewport = page.getViewport({ scale });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not create canvas context');
+
+  await page.render({
+    canvasContext: ctx,
+    viewport,
+  }).promise;
+
+  return canvas.toDataURL('image/jpeg', 0.92);
+}

@@ -248,6 +248,37 @@ async function startServer() {
     }
   });
 
+  // Image Proxy for Archive.org covers and page images with CORS headers
+  app.get('/api/image-proxy', async (req, res) => {
+    const rawUrl = req.query.url as string;
+    if (!rawUrl) {
+      return res.status(400).json({ error: 'Missing url parameter' });
+    }
+
+    try {
+      const response = await fetch(rawUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'image/*,*/*',
+        },
+      });
+
+      if (!response.ok) {
+        return res.status(response.status).json({ error: `Image fetch failed with status ${response.status}` });
+      }
+
+      const contentType = response.headers.get('content-type') || 'image/jpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=604800');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      const buffer = await response.arrayBuffer();
+      res.send(Buffer.from(buffer));
+    } catch (err: any) {
+      res.status(502).json({ error: err.message || 'Failed to proxy image' });
+    }
+  });
+
   // Serve static assets in production or Vite in development
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
