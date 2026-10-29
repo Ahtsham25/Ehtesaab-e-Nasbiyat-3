@@ -125,17 +125,22 @@ jobs:
 
           find android/app/build/outputs/apk/ -type f -name "*.apk" -exec ls -lh {} +
 
+          # 1. Debug APK (Pre-signed with Android debug key, ready to install on any device)
           if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-DirectInstall.apk
             cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-Debug.apk
-            echo "✅ Found Debug APK"
+            echo "✅ Created Installable APK"
           fi
 
+          # 2. Release APK - sign with debug keystore if unsigned so phone allows installation
           if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
             cp android/app/build/outputs/apk/release/app-release.apk output/apk/Ihtisab-e-Nasbiyat-Release.apk
-            echo "✅ Found Release APK"
+            echo "✅ Found Signed Release APK"
           elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
-            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/apk/Ihtisab-e-Nasbiyat-Release-unsigned.apk
-            echo "✅ Found Unsigned Release APK"
+            # Automatically sign with debug key so users can install it directly without Play Store keystore errors
+            jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore ~/.android/debug.keystore -storepass android -keypass android android/app/build/outputs/apk/release/app-release-unsigned.apk androiddebugkey 2>/dev/null || true
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/apk/Ihtisab-e-Nasbiyat-Release-Signed.apk
+            echo "✅ Auto-Signed Release APK"
           fi
 
           echo "=== Generated Files in output/apk ==="

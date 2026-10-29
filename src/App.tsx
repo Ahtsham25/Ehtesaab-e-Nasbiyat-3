@@ -488,13 +488,13 @@ export default function App() {
                 <div className="space-y-2.5 max-w-2xl">
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/50 text-amber-300 text-xs font-bold font-sans">
                     <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
-                    <span>خصوصی و تحقیقی شعبہ — لامحدود کتب کا اضافہ</span>
+                    <span>خصوصی تحقیقی سلسلہ</span>
                   </div>
                   <h3 className="font-nastaliq text-2xl sm:text-3xl lg:text-4xl font-extrabold text-amber-300 leading-snug drop-shadow-md">
                     احتسابِ ناصبیت پر اعتراضات کے جوابات
                   </h3>
                   <p className="text-xs sm:text-sm text-stone-200 font-sans leading-relaxed">
-                    ردِ اعتراضات، تحقیقی مقالات، اور جواب الجواب کتب کا مکمل شعبہ۔ یہاں کتب کی کوئی حد (12 کتب کی پابندی) نہیں ہے؛ آپ خود بھی نئی کتب، مضامین اور رسائل کا اضافہ کر سکتے ہیں۔
+                    کتاب "احتسابِ ناصبیت" پر معترضین کے اٹھائے گئے تمام شبہات، الزامات اور اعتراضات کے نصوص و اسناد کی روشنی میں مدلل و مسکت علمی جوابات کا جامع مجموعہ۔
                   </p>
                   <div className="flex flex-wrap items-center gap-2 pt-1 font-sans">
                     <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 font-semibold">
@@ -503,8 +503,8 @@ export default function App() {
                     <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-stone-800 text-amber-300 border border-amber-500/30">
                       آن لائن مطالعہ + پی ڈی ایف ڈاؤن لوڈ
                     </span>
-                    <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-amber-600/30 text-amber-200 border border-amber-400/40">
-                      + نئی کتاب شامل کریں
+                    <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-900/40 text-emerald-300 border border-emerald-500/30">
+                      مستند مراجع و اسناد
                     </span>
                   </div>
                 </div>
@@ -517,7 +517,7 @@ export default function App() {
                     }}
                     className="w-full md:w-auto inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 text-stone-950 font-extrabold text-sm sm:text-base shadow-xl transition-all cursor-pointer font-nastaliq"
                   >
-                    <span>کتب کھولیں اور نئی کتاب کا اضافہ کریں</span>
+                    <span>کتب کی فہرست و مطالعہ فرمائیں</span>
                     <ArrowRight className="w-5 h-5 text-stone-950 stroke-[3]" />
                   </button>
                 </div>
@@ -619,9 +619,6 @@ export default function App() {
         {activeTab === 'responses' && (
           <ResponsesTab
             books={responseBooks}
-            onAddBook={handleAddResponseBook}
-            onUpdateBook={handleUpdateResponseBook}
-            onDeleteBook={handleDeleteResponseBook}
             onReadBook={handleReadResponseBook}
             onNavigateHome={() => setActiveTab('home')}
           />
@@ -689,6 +686,10 @@ export default function App() {
             onSaveVolumes={saveVolumesState}
             onResetVolumes={handleResetVolumes}
             onSyncGithub={() => syncWithGithubCloud(true)}
+            responseBooks={responseBooks}
+            onAddResponseBook={handleAddResponseBook}
+            onUpdateResponseBook={handleUpdateResponseBook}
+            onDeleteResponseBook={handleDeleteResponseBook}
           />
         )}
       </main>
