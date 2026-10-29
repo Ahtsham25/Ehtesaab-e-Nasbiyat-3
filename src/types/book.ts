@@ -44,6 +44,22 @@ export interface DrawingAnnotation {
   updatedAt: string;
 }
 
-export type ActiveTab = 'home' | 'editor' | 'downloads' | 'highlights' | 'bookmarks' | 'about' | 'privacy' | 'admin';
+export interface ResponseBook {
+  id: string;
+  titleUrdu: string;
+  author: string;
+  topic?: string;
+  description: string;
+  archiveItemId?: string;
+  pdfUrl: string;
+  coverImageUrl?: string;
+  pageCount: number;
+  fileSize?: string;
+  year?: string;
+  lastReadPage?: number;
+  isBookmarked?: boolean;
+  isUserAdded?: boolean;
+  createdAt: string;
+}
 
-
+export type ActiveTab = 'home' | 'responses' | 'editor' | 'downloads' | 'highlights' | 'bookmarks' | 'about' | 'privacy' | 'admin';

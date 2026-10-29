@@ -17,10 +17,20 @@ import {
   Maximize2,
   ChevronRight,
   ChevronLeft,
+  ArrowRight,
+  Plus,
+  Palette,
+  BookOpen,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft
 } from 'lucide-react';
 import { VolumeData } from '../types/book';
-import { BOOK_VOLUMES_CONTENT, ChapterItem } from '../data/bookContent';
 import { DEFAULT_VOLUMES } from '../data/defaultVolumes';
+import {
+  resolveVolumeArchiveId,
+  getArchivePageImageUrl
+} from '../utils/archiveUtils';
 
 interface ScreenEditorModalProps {
   volume: VolumeData;
@@ -45,24 +55,29 @@ interface StrokeAnnotation {
   width?: number;
 }
 
-interface TextAnnotation {
+export interface DraggableText {
   id: string;
   text: string;
-  x: number;
+  x: number; // in pixels relative to 680px sheet
   y: number;
-  color: string;
   fontSize: number;
+  color: string;
+  bgColor: string; // 'transparent', '#000000bb', '#ffffffdd', '#f59e0b', '#065f46'
+  isBold: boolean;
 }
 
 const SHEET_WIDTH = 680;
-const PAGE_WIDTH = 285;
-const PAGE_HEIGHT = 380;
+const PAGE_WIDTH = 295;
+const PAGE_HEIGHT = 410;
 
 const COLOR_OPTIONS = [
   { id: 'yellow', value: '#ffeb3b', label: 'پیلا' },
   { id: 'green', value: '#00e676', label: 'سبز' },
   { id: 'pink', value: '#ff2d55', label: 'گلابی' },
   { id: 'blue', value: '#0084ff', label: 'نیلا' },
+  { id: 'gold', value: '#f59e0b', label: 'سنہری' },
+  { id: 'black', value: '#1c1917', label: 'سیاہ' },
+  { id: 'white', value: '#ffffff', label: 'سفید' },
 ];
 
 export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
@@ -74,10 +89,14 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
 }) => {
   const [activeVolume, setActiveVolume] = useState<VolumeData>(initialVolume || DEFAULT_VOLUMES[0]);
   const [currentPage, setCurrentPage] = useState<number>(initialPage || 1);
-  const [activeTool, setActiveTool] = useState<'highlight' | 'box' | 'line' | 'text' | 'move'>('highlight');
+  const [titlePageNumber, setTitlePageNumber] = useState<number>(1);
+
+  // Active Tool: 'highlight' | 'box' | 'line' | 'text' | 'move'
+  const [activeTool, setActiveTool] = useState<'highlight' | 'box' | 'line' | 'text' | 'move'>('text');
   const [selectedColor, setSelectedColor] = useState<string>('#ffeb3b');
   const [intensity, setIntensity] = useState<number>(85); // 20 - 100%
   const [topSpaceOption, setTopSpaceOption] = useState<'0' | '10' | '20' | '30'>('10');
+  const [customCitationTitle, setCustomCitationTitle] = useState<string>('');
   const [zoomPercent, setZoomPercent] = useState<number>(100);
 
   // Viewport container measurement for responsive auto-fitting
@@ -86,16 +105,43 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     height: 480,
   });
 
-  // History & Annotations
+  // Annotations
   const [strokes, setStrokes] = useState<StrokeAnnotation[]>([]);
   const [redoStrokes, setRedoStrokes] = useState<StrokeAnnotation[]>([]);
-  const [texts, setTexts] = useState<TextAnnotation[]>([]);
-  const [textInputPos, setTextInputPos] = useState<Point | null>(null);
-  const [currentTextInput, setCurrentTextInput] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [activeStroke, setActiveStroke] = useState<StrokeAnnotation | null>(null);
+
+  // Draggable Texts (Requirement 2: freely movable text boxes)
+  const [textList, setTextList] = useState<DraggableText[]>([
+    {
+      id: 'txt-default-title',
+      text: `کتاب "احتسابِ ناصبیت" - جلد ${initialVolume?.volumeNumber || 1}`,
+      x: 340,
+      y: 28,
+      fontSize: 16,
+      color: '#065f46',
+      bgColor: 'transparent',
+      isBold: true,
+    },
+    {
+      id: 'txt-default-page',
+      text: `صفحہ نمبر: ${initialPage || 1}`,
+      x: 520,
+      y: 470,
+      fontSize: 13,
+      color: '#1f2937',
+      bgColor: '#f3f4f6dd',
+      isBold: true,
+    }
+  ]);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [newTextInput, setNewTextInput] = useState<string>('');
+  const [showAddTextModal, setShowAddTextModal] = useState<boolean>(false);
+  const [isDraggingText, setIsDraggingText] = useState<boolean>(false);
+  const [dragOffset, setDragOffset] = useState<Point>({ x: 0, y: 0 });
+
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [showMenu, setShowMenu] = useState<boolean>(false);
+  const [showVolumePicker, setShowVolumePicker] = useState<boolean>(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -104,6 +150,11 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 2500);
   };
+
+  // Archive Identifier & Real Book Page Images
+  const archiveId = resolveVolumeArchiveId(activeVolume.volumeNumber, activeVolume.archiveItemId);
+  const titlePageImgUrl = getArchivePageImageUrl(archiveId, titlePageNumber);
+  const refPageImgUrl = getArchivePageImageUrl(archiveId, currentPage);
 
   // Top space and total sheet height calculations
   const topSpacePx =
@@ -132,111 +183,145 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   const autoFitScale = Math.min(availW / SHEET_WIDTH, availH / totalSheetHeight, 1);
   const effectiveScale = autoFitScale * (zoomPercent / 100);
 
-  // Volume content resolution
-  const volContent =
-    BOOK_VOLUMES_CONTENT[activeVolume.volumeNumber] || BOOK_VOLUMES_CONTENT[1];
-  const chapters: ChapterItem[] = volContent.chapters || [];
-  const currentChapter: ChapterItem =
-    [...chapters].reverse().find((c) => c.page <= currentPage) || chapters[0] || {
-      id: 1,
-      title: 'فصل اول: ناصبیت کا لغوی اور اصطلاحی مفہوم',
-      page: 15,
-      arabicVerse: 'قُل لَّا أَسْأَلُكُمْ عَلَيْهِ أَجْرًا إِلَّا الْمَوَدَّةَ فِي الْقُرْبَىٰ',
-      translation:
-        'فرما دیجئے: میں تم سے اس پر کوئی اجر نہیں مانگتا سوائے اپنی قرابت داروں کی محبت کے۔ (الشوریٰ: 23)',
-      content: [
-        'لغتِ عرب میں "نصب" کے معنی برپا کرنے، عداوت کو دین بنانے اور بغض قائم کرنے کے ہیں۔',
-        'جمہور محدثین و ائمہ سلف کے نزدیک امیر المومنین سیدنا علی المرتضیٰ اور آلِ رسول سے بغض رکھنا صریح نفاق ہے۔',
-        'صحیح مسلم میں سیدنا علی کا ارشاد منقول ہے: "والذي فلق الحبة وبرأ النسمة إنه لعهد النبي الأمي إلي أن لا يحبني إلا مؤمن ولا يبغضني إلا منافق"۔',
-      ],
-    };
+  // Sync initial volume
+  useEffect(() => {
+    if (initialVolume) {
+      setActiveVolume(initialVolume);
+    }
+    if (initialPage) {
+      setCurrentPage(initialPage);
+    }
+  }, [initialVolume, initialPage]);
 
-  // Re-draw canvas elements
+  // Update default text when volume or page changes
+  useEffect(() => {
+    setTextList((prev) =>
+      prev.map((item) => {
+        if (item.id === 'txt-default-title') {
+          return {
+            ...item,
+            text: customCitationTitle || `کتاب "احتسابِ ناصبیت" - ${activeVolume.volumeTitleUrdu}`,
+          };
+        }
+        if (item.id === 'txt-default-page') {
+          return {
+            ...item,
+            text: `صفحہ: ${currentPage} / ${activeVolume.pageCount || 476}`,
+          };
+        }
+        return item;
+      })
+    );
+  }, [activeVolume, currentPage, customCitationTitle]);
+
+  // Canvas Drawing & Re-draw logic
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, SHEET_WIDTH, totalSheetHeight);
 
-    const allStrokes = activeStroke ? [...strokes, activeStroke] : strokes;
-
-    allStrokes.forEach((st) => {
+    // Draw saved strokes
+    strokes.forEach((s) => {
       ctx.save();
-      const alpha = (st.opacity || 85) / 100;
+      const alpha = s.opacity / 100;
       ctx.globalAlpha = alpha;
+      ctx.strokeStyle = s.color;
+      ctx.fillStyle = s.color;
 
-      if (st.tool === 'highlight') {
-        ctx.strokeStyle = st.color;
-        ctx.fillStyle = st.color;
-        ctx.lineWidth = st.width || 20;
+      if (s.tool === 'highlight' && s.points && s.points.length > 0) {
+        ctx.lineWidth = s.width || 22;
+        ctx.lineCap = 'square';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(s.points[0].x, s.points[0].y);
+        for (let i = 1; i < s.points.length; i++) {
+          ctx.lineTo(s.points[i].x, s.points[i].y);
+        }
+        ctx.stroke();
+      } else if (s.tool === 'line' && s.points && s.points.length > 0) {
+        ctx.lineWidth = s.width || 4;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        if (st.points && st.points.length > 1) {
-          ctx.beginPath();
-          ctx.moveTo(st.points[0].x, st.points[0].y);
-          for (let i = 1; i < st.points.length; i++) {
-            ctx.lineTo(st.points[i].x, st.points[i].y);
-          }
-          ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(s.points[0].x, s.points[0].y);
+        for (let i = 1; i < s.points.length; i++) {
+          ctx.lineTo(s.points[i].x, s.points[i].y);
         }
-      } else if (st.tool === 'line') {
-        ctx.strokeStyle = st.color;
-        ctx.lineWidth = 4;
-        ctx.lineCap = 'round';
-        if (st.points && st.points.length >= 2) {
-          const start = st.points[0];
-          const end = st.points[st.points.length - 1];
-          ctx.beginPath();
-          ctx.moveTo(start.x, start.y);
-          ctx.lineTo(end.x, start.y);
-          ctx.stroke();
-        }
-      } else if (st.tool === 'box' && st.boxRect) {
-        ctx.strokeStyle = st.color;
-        ctx.lineWidth = 3;
-        ctx.fillStyle = st.color + '20';
-        const { x, y, w, h } = st.boxRect;
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeRect(x, y, w, h);
+        ctx.stroke();
+      } else if (s.tool === 'box' && s.boxRect) {
+        ctx.lineWidth = s.width || 3;
+        ctx.strokeRect(s.boxRect.x, s.boxRect.y, s.boxRect.w, s.boxRect.h);
+        ctx.globalAlpha = alpha * 0.18;
+        ctx.fillRect(s.boxRect.x, s.boxRect.y, s.boxRect.w, s.boxRect.h);
       }
       ctx.restore();
     });
 
-    // Draw text annotations
-    texts.forEach((txt) => {
+    // Draw active stroke in progress
+    if (activeStroke) {
       ctx.save();
-      ctx.font = `bold ${txt.fontSize}px 'Noto Nastaliq Urdu', serif`;
-      ctx.fillStyle = txt.color;
-      ctx.fillText(txt.text, txt.x, txt.y);
+      const alpha = activeStroke.opacity / 100;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = activeStroke.color;
+      ctx.fillStyle = activeStroke.color;
+
+      if (activeStroke.tool === 'highlight' && activeStroke.points) {
+        ctx.lineWidth = activeStroke.width || 22;
+        ctx.lineCap = 'square';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(activeStroke.points[0].x, activeStroke.points[0].y);
+        for (let i = 1; i < activeStroke.points.length; i++) {
+          ctx.lineTo(activeStroke.points[i].x, activeStroke.points[i].y);
+        }
+        ctx.stroke();
+      } else if (activeStroke.tool === 'line' && activeStroke.points) {
+        ctx.lineWidth = activeStroke.width || 4;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(activeStroke.points[0].x, activeStroke.points[0].y);
+        for (let i = 1; i < activeStroke.points.length; i++) {
+          ctx.lineTo(activeStroke.points[i].x, activeStroke.points[i].y);
+        }
+        ctx.stroke();
+      } else if (activeStroke.tool === 'box' && activeStroke.boxRect) {
+        ctx.lineWidth = activeStroke.width || 3;
+        ctx.strokeRect(
+          activeStroke.boxRect.x,
+          activeStroke.boxRect.y,
+          activeStroke.boxRect.w,
+          activeStroke.boxRect.h
+        );
+        ctx.globalAlpha = alpha * 0.18;
+        ctx.fillRect(
+          activeStroke.boxRect.x,
+          activeStroke.boxRect.y,
+          activeStroke.boxRect.w,
+          activeStroke.boxRect.h
+        );
+      }
       ctx.restore();
-    });
-  }, [strokes, activeStroke, texts]);
+    }
+  }, [strokes, activeStroke, totalSheetHeight]);
 
   useEffect(() => {
     redrawCanvas();
   }, [redrawCanvas]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas) {
-      canvas.width = SHEET_WIDTH;
-      canvas.height = totalSheetHeight;
-      redrawCanvas();
-    }
-  }, [totalSheetHeight, redrawCanvas]);
-
-  // Translate client/touch pointer to canvas native coordinates
+  // Coordinate mapper from screen to 680px sheet space
   const getCanvasCoords = (e: React.MouseEvent | React.TouchEvent): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const clientX = 'touches' in e && e.touches.length > 0 ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-    const clientY = 'touches' in e && e.touches.length > 0 ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
 
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    const scaleX = SHEET_WIDTH / rect.width;
+    const scaleY = totalSheetHeight / rect.height;
 
     return {
       x: (clientX - rect.left) * scaleX,
@@ -244,15 +329,10 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     };
   };
 
+  // Pointer event handlers for drawing tools
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
-    if (activeTool === 'move') return;
+    if (activeTool === 'move' || activeTool === 'text') return;
     const pt = getCanvasCoords(e);
-
-    if (activeTool === 'text') {
-      setTextInputPos(pt);
-      setCurrentTextInput('');
-      return;
-    }
 
     setIsDrawing(true);
     setRedoStrokes([]);
@@ -303,13 +383,134 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     }
   };
 
+  // Draggable text mouse/touch handlers
+  const handleTextMouseDown = (id: string, e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation();
+    setSelectedTextId(id);
+    setIsDraggingText(true);
+
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+
+    const item = textList.find((t) => t.id === id);
+    if (item && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const scaleX = SHEET_WIDTH / rect.width;
+      const scaleY = totalSheetHeight / rect.height;
+      const currentCanvasX = (clientX - rect.left) * scaleX;
+      const currentCanvasY = (clientY - rect.top) * scaleY;
+      setDragOffset({
+        x: currentCanvasX - item.x,
+        y: currentCanvasY - item.y,
+      });
+    }
+  };
+
+  const handleSheetPointerMove = (e: React.MouseEvent | React.TouchEvent) => {
+    if (isDraggingText && selectedTextId) {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+      const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+
+      const scaleX = SHEET_WIDTH / rect.width;
+      const scaleY = totalSheetHeight / rect.height;
+      const canvasX = (clientX - rect.left) * scaleX;
+      const canvasY = (clientY - rect.top) * scaleY;
+
+      const newX = Math.round(canvasX - dragOffset.x);
+      const newY = Math.round(canvasY - dragOffset.y);
+
+      setTextList((prev) =>
+        prev.map((t) =>
+          t.id === selectedTextId
+            ? { ...t, x: Math.max(10, Math.min(SHEET_WIDTH - 20, newX)), y: Math.max(10, Math.min(totalSheetHeight - 10, newY)) }
+            : t
+        )
+      );
+    }
+  };
+
+  const handleSheetPointerUp = () => {
+    if (isDraggingText) {
+      setIsDraggingText(false);
+    }
+  };
+
+  // Nudge selected text with directional buttons
+  const nudgeText = (dx: number, dy: number) => {
+    if (!selectedTextId) return;
+    setTextList((prev) =>
+      prev.map((t) =>
+        t.id === selectedTextId
+          ? {
+              ...t,
+              x: Math.max(10, Math.min(SHEET_WIDTH - 20, t.x + dx)),
+              y: Math.max(10, Math.min(totalSheetHeight - 10, t.y + dy)),
+            }
+          : t
+      )
+    );
+  };
+
+  const updateSelectedTextFontSize = (delta: number) => {
+    if (!selectedTextId) return;
+    setTextList((prev) =>
+      prev.map((t) =>
+        t.id === selectedTextId ? { ...t, fontSize: Math.max(10, Math.min(48, t.fontSize + delta)) } : t
+      )
+    );
+  };
+
+  const updateSelectedTextColor = (col: string) => {
+    if (!selectedTextId) return;
+    setTextList((prev) =>
+      prev.map((t) => (t.id === selectedTextId ? { ...t, color: col } : t))
+    );
+  };
+
+  const updateSelectedTextBg = (bg: string) => {
+    if (!selectedTextId) return;
+    setTextList((prev) =>
+      prev.map((t) => (t.id === selectedTextId ? { ...t, bgColor: bg } : t))
+    );
+  };
+
+  const deleteSelectedText = () => {
+    if (!selectedTextId) return;
+    setTextList((prev) => prev.filter((t) => t.id !== selectedTextId));
+    setSelectedTextId(null);
+    showToast('تحریر حذف کر دی گئی');
+  };
+
+  const handleAddNewTextSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTextInput.trim()) return;
+
+    const newId = `txt-${Date.now()}`;
+    const newText: DraggableText = {
+      id: newId,
+      text: newTextInput.trim(),
+      x: 340,
+      y: topSpacePx > 20 ? 30 : 60,
+      fontSize: 16,
+      color: selectedColor === '#ffeb3b' ? '#065f46' : selectedColor,
+      bgColor: '#ffffffdd',
+      isBold: true,
+    };
+    setTextList((prev) => [...prev, newText]);
+    setSelectedTextId(newId);
+    setNewTextInput('');
+    setShowAddTextModal(false);
+    showToast('نئی تحریر شامل ہو گئی! آپ اسے انگلی سے کہیں بھی لے جا سکتے ہیں۔');
+  };
+
   const handleUndo = () => {
     if (strokes.length > 0) {
       const last = strokes[strokes.length - 1];
       setStrokes((prev) => prev.slice(0, -1));
       setRedoStrokes((prev) => [last, ...prev]);
-    } else if (texts.length > 0) {
-      setTexts((prev) => prev.slice(0, -1));
     }
   };
 
@@ -321,193 +522,411 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     }
   };
 
-  const handleAddText = () => {
-    if (textInputPos && currentTextInput.trim()) {
-      setTexts((prev) => [
-        ...prev,
-        {
-          id: `txt-${Date.now()}`,
-          text: currentTextInput.trim(),
-          x: textInputPos.x,
-          y: textInputPos.y,
-          color: selectedColor === '#ffeb3b' ? '#b45309' : selectedColor,
-          fontSize: 20,
-        },
-      ]);
-      setTextInputPos(null);
-      setCurrentTextInput('');
-    }
-  };
-
-  // Export & Download high resolution snapshot
-  const handleExportImage = () => {
+  // High resolution composite image export
+  const handleExportImage = async () => {
     try {
-      const drawingCanvas = canvasRef.current;
-      if (!drawingCanvas) return;
-
+      showToast('تصویر تیار ہو رہی ہے...');
       const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = SHEET_WIDTH;
-      exportCanvas.height = totalSheetHeight;
+      exportCanvas.width = SHEET_WIDTH * 2;
+      exportCanvas.height = totalSheetHeight * 2;
       const ctx = exportCanvas.getContext('2d');
       if (!ctx) return;
 
-      // Fill white paper background
+      ctx.scale(2, 2);
+
+      // 1. Background white sheet
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, SHEET_WIDTH, totalSheetHeight);
 
-      // Top title bar text
-      ctx.fillStyle = '#15803d';
-      ctx.font = "bold 18px 'Noto Nastaliq Urdu', serif";
-      ctx.textAlign = 'center';
-      ctx.fillText(
-        `احتساب ناصبیت - ${activeVolume.volumeTitleUrdu} (صفحہ ${currentPage})`,
-        SHEET_WIDTH / 2,
-        28
-      );
+      // Helper function to load image
+      const loadImage = (url: string): Promise<HTMLImageElement> =>
+        new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error('Image load failed'));
+          img.src = url;
+        });
 
-      // Draw the user annotations
-      ctx.drawImage(drawingCanvas, 0, 0);
+      // Try loading real book images
+      try {
+        const [imgRef, imgTitle] = await Promise.all([
+          loadImage(refPageImgUrl),
+          loadImage(titlePageImgUrl),
+        ]);
 
-      // Footer
-      ctx.fillStyle = '#78716c';
-      ctx.font = "12px 'Noto Nastaliq Urdu', serif";
-      ctx.textAlign = 'center';
-      ctx.fillText(`دار النشر والتحقیق • مکتبہ ردِ ناصبیت`, SHEET_WIDTH / 2, totalSheetHeight - 16);
+        // Draw Reference Page (Right in RTL: x: 350, y: topSpacePx)
+        ctx.drawImage(imgRef, 355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        ctx.strokeStyle = '#d1d5db';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
 
-      const dataUrl = exportCanvas.toDataURL('image/png');
+        // Draw Title Page (Left in RTL: x: 30, y: topSpacePx)
+        ctx.drawImage(imgTitle, 30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        ctx.strokeRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+      } catch {
+        // Fallback placeholder borders
+        ctx.fillStyle = '#f9fafb';
+        ctx.fillRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        ctx.fillRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+      }
+
+      // 2. Draw canvas drawing strokes
+      const drawingCanvas = canvasRef.current;
+      if (drawingCanvas) {
+        ctx.drawImage(drawingCanvas, 0, 0, SHEET_WIDTH, totalSheetHeight);
+      }
+
+      // 3. Draw all Draggable Text elements
+      textList.forEach((t) => {
+        ctx.save();
+        ctx.font = `${t.isBold ? 'bold ' : ''}${t.fontSize}px 'Jameel Noori Nastaleeq', 'Noto Nastaliq Urdu', serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const textMetrics = ctx.measureText(t.text);
+        const padX = 10;
+        const padY = 6;
+        const boxW = textMetrics.width + padX * 2;
+        const boxH = t.fontSize * 1.5 + padY * 2;
+
+        if (t.bgColor && t.bgColor !== 'transparent') {
+          ctx.fillStyle = t.bgColor;
+          ctx.beginPath();
+          ctx.roundRect(t.x - boxW / 2, t.y - boxH / 2, boxW, boxH, 6);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = t.color;
+        ctx.fillText(t.text, t.x, t.y);
+        ctx.restore();
+      });
+
+      // 4. Download Trigger
+      const dataUrl = exportCanvas.toDataURL('image/jpeg', 0.95);
       const link = document.createElement('a');
-      link.download = `Ehtesaab_Sanad_Vol_${activeVolume.volumeNumber}_p${currentPage}.png`;
       link.href = dataUrl;
+      link.download = `Ehtisab-Sanad-Vol${activeVolume.volumeNumber}-Page${currentPage}.jpg`;
       link.click();
-      showToast('تصویر کامیابی سے محفوظ ہو گئی!');
+      showToast('سند و حوالہ تصویر کامیابی سے ڈاؤن لوڈ ہو گئی!');
     } catch {
-      showToast('محفوظ ہو گئی!');
+      showToast('تصویر برآمد کرنے میں دشواری پیش آئی۔');
     }
   };
 
-  const handlePrevPage = () => {
-    const prev = Math.max(1, currentPage - 1);
-    setCurrentPage(prev);
-    if (onPageChange) onPageChange(prev);
-  };
-
-  const handleNextPage = () => {
-    const next = Math.min(activeVolume.pageCount || 560, currentPage + 1);
-    setCurrentPage(next);
-    if (onPageChange) onPageChange(next);
-  };
+  const selectedTextItem = textList.find((t) => t.id === selectedTextId);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-stone-950 select-none overflow-hidden font-sans">
-      {/* 1. Header Bar */}
-      <header className="bg-emerald-700 text-white h-13 px-3 flex items-center justify-between shadow-md shrink-0 z-40">
-        {/* Right side: Close (X) */}
-        <button
-          onClick={onClose}
-          className="p-1.5 text-white hover:bg-emerald-600 rounded-lg transition-colors cursor-pointer"
-          title="بند کریں"
-        >
-          <X className="w-5 h-5" />
-        </button>
-
-        {/* Center: Title & Undo/Redo */}
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-stone-950 text-stone-100 select-none overflow-hidden font-sans"
+      onMouseMove={handleSheetPointerMove}
+      onTouchMove={handleSheetPointerMove}
+      onMouseUp={handleSheetPointerUp}
+      onTouchEnd={handleSheetPointerUp}
+    >
+      {/* 1. TOP HEADER: Back Button + Title + Page Switchers + Download */}
+      <header className="h-14 bg-stone-900 border-b border-stone-800 px-3 sm:px-4 flex items-center justify-between z-30 shrink-0">
+        {/* Left: Volume & Page Selectors */}
         <div className="flex items-center gap-2">
-          <span className="text-sm sm:text-base font-bold text-white whitespace-nowrap font-nastaliq px-1">
-            اسکرین ترمیم
-          </span>
+          {/* Back Button */}
           <button
-            onClick={handleUndo}
-            disabled={strokes.length === 0 && texts.length === 0}
-            className={`p-1.5 rounded-lg transition-colors ${
-              strokes.length > 0 || texts.length > 0
-                ? 'text-white hover:bg-emerald-600 cursor-pointer'
-                : 'text-emerald-400/50 cursor-not-allowed'
-            }`}
-            title="ان ڈو (Undo)"
+            onClick={onClose}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 font-bold text-xs sm:text-sm cursor-pointer transition-colors"
+            title="بند کریں اور واپس جائیں"
           >
-            <RotateCcw className="w-4 h-4" />
+            <ArrowRight className="w-4 h-4 text-emerald-400 stroke-[2.5]" />
+            <span className="font-nastaliq text-sm">واپس</span>
           </button>
-          <button
-            onClick={handleRedo}
-            disabled={redoStrokes.length === 0}
-            className={`p-1.5 rounded-lg transition-colors ${
-              redoStrokes.length > 0
-                ? 'text-white hover:bg-emerald-600 cursor-pointer'
-                : 'text-emerald-400/50 cursor-not-allowed'
-            }`}
-            title="ری ڈو (Redo)"
-          >
-            <RotateCw className="w-4 h-4" />
-          </button>
-        </div>
 
-        {/* Left side: Options Menu & Save button */}
-        <div className="flex items-center gap-1.5">
+          {/* Volume Dropdown Button */}
           <div className="relative">
             <button
-              onClick={() => setShowMenu(!showMenu)}
-              className="p-1.5 text-white hover:bg-emerald-600 rounded-lg transition-colors cursor-pointer"
-              title="مزید آپشنز"
+              onClick={() => setShowVolumePicker(!showVolumePicker)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/80 text-emerald-300 border border-emerald-600/50 text-xs font-bold cursor-pointer hover:bg-emerald-900/80"
             >
-              <MoreVertical className="w-4 h-4" />
+              <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
+              <span>جلد {activeVolume.volumeNumber} ({activeVolume.volumeTitleUrdu})</span>
             </button>
-            {showMenu && (
-              <div className="absolute right-0 top-10 bg-stone-900 border border-stone-800 text-stone-200 rounded-xl shadow-2xl py-2 w-48 z-50 text-xs font-nastaliq">
-                <button
-                  onClick={() => {
-                    handleExportImage();
-                    setShowMenu(false);
-                  }}
-                  className="w-full text-right px-4 py-2 hover:bg-stone-800 flex items-center justify-between cursor-pointer"
-                >
-                  <span>ڈاؤن لوڈ کریں (PNG)</span>
-                  <Download className="w-3.5 h-3.5 text-emerald-400" />
-                </button>
-                <button
-                  onClick={() => {
-                    setStrokes([]);
-                    setTexts([]);
-                    setRedoStrokes([]);
-                    setShowMenu(false);
-                    showToast('تمام نشانات مٹا دیے گئے');
-                  }}
-                  className="w-full text-right px-4 py-2 hover:bg-stone-800 text-rose-400 flex items-center justify-between cursor-pointer"
-                >
-                  <span>سب صاف کریں</span>
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+
+            {showVolumePicker && (
+              <div className="absolute top-full left-0 mt-1 w-64 bg-stone-900 border border-stone-700 rounded-2xl shadow-2xl p-2 z-50 max-h-72 overflow-y-auto">
+                <div className="text-[11px] font-bold text-stone-400 px-2 py-1 border-b border-stone-800 mb-1">
+                  جلد منتخب فرمائیں:
+                </div>
+                {DEFAULT_VOLUMES.map((vol) => (
+                  <button
+                    key={vol.id}
+                    onClick={() => {
+                      setActiveVolume(vol);
+                      setShowVolumePicker(false);
+                      if (onVolumeChange) onVolumeChange(vol);
+                    }}
+                    className={`w-full text-right px-3 py-1.5 rounded-xl text-xs transition-colors flex items-center justify-between ${
+                      vol.id === activeVolume.id
+                        ? 'bg-emerald-600 text-stone-950 font-bold'
+                        : 'text-stone-300 hover:bg-stone-800'
+                    }`}
+                  >
+                    <span>{vol.volumeTitleUrdu}</span>
+                    <span className="font-mono text-[10px] opacity-75">جلد {vol.volumeNumber}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>
 
+          {/* Page Stepper */}
+          <div className="flex items-center gap-1 bg-stone-950 border border-stone-800 rounded-xl px-2 py-1">
+            <button
+              onClick={() => {
+                const nextP = Math.max(1, currentPage - 1);
+                setCurrentPage(nextP);
+                if (onPageChange) onPageChange(nextP);
+              }}
+              disabled={currentPage <= 1}
+              className="p-1 text-stone-400 hover:text-white disabled:opacity-30 cursor-pointer"
+              title="پچھلا صفحہ"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+
+            <span className="text-xs text-stone-300 font-mono font-bold px-1">
+              ص {currentPage} / {activeVolume.pageCount || 476}
+            </span>
+
+            <button
+              onClick={() => {
+                const nextP = Math.min(activeVolume.pageCount || 476, currentPage + 1);
+                setCurrentPage(nextP);
+                if (onPageChange) onPageChange(nextP);
+              }}
+              disabled={currentPage >= (activeVolume.pageCount || 476)}
+              className="p-1 text-stone-400 hover:text-white disabled:opacity-30 cursor-pointer"
+              title="اگلا صفحہ"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Center / Right: Export Button */}
+        <div className="flex items-center gap-2">
           <button
             onClick={handleExportImage}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-nastaliq font-bold transition-all shadow-sm cursor-pointer"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-stone-950 font-bold text-xs sm:text-sm shadow-xl cursor-pointer transition-all active:scale-95"
+            title="سند و حوالہ کارڈ محفوظ کریں"
           >
-            <Check className="w-3.5 h-3.5" />
-            <span>محفوظ</span>
+            <Download className="w-4 h-4 stroke-[2.5]" />
+            <span className="font-nastaliq text-sm sm:text-base">سند محفوظ کریں</span>
           </button>
         </div>
       </header>
 
-      {/* 2. Sub-Header Helper Instruction Banner */}
-      <div className="bg-emerald-800/90 text-emerald-100 text-[11px] py-1 px-3 text-center font-nastaliq border-b border-emerald-600/30 shrink-0">
-        {activeTool === 'highlight' && 'نشان — گھسیٹیں۔ شدت سے رنگ ہلکا/گہرا، متن واضح رہے گا'}
-        {activeTool === 'box' && 'باکس — اوپر، نیچے یا صفحے پر چوکھٹا بنائیں'}
-        {activeTool === 'line' && 'لائن — جملے کے نیچے سیدھی لکیر کھینچیں'}
-        {activeTool === 'text' && 'متن — اوپر یا نیچے خالی جگہ یا صفحے پر کلک کر کے لکھیں'}
-        {activeTool === 'move' && 'منتقل — صفحے کو گھمائیں اور زوم کریں'}
+      {/* 2. SECONDARY TOOLBAR: Tool Selectors + Draggable Text Manager */}
+      <div className="h-12 bg-stone-900/90 border-b border-stone-800 px-3 flex flex-wrap items-center justify-between gap-2 z-20 text-xs shrink-0">
+        {/* Drawing & Text Tools */}
+        <div className="flex items-center gap-1.5">
+          {/* Highlighter */}
+          <button
+            onClick={() => setActiveTool('highlight')}
+            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+              activeTool === 'highlight'
+                ? 'bg-amber-600 text-stone-950 font-bold shadow'
+                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+            }`}
+            title="ہائی لائٹر"
+          >
+            <Highlighter className="w-4 h-4" />
+            <span className="hidden sm:inline">ہائی لائٹر</span>
+          </button>
+
+          {/* Box Tool */}
+          <button
+            onClick={() => setActiveTool('box')}
+            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+              activeTool === 'box'
+                ? 'bg-amber-600 text-stone-950 font-bold shadow'
+                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+            }`}
+            title="چوکھٹا (Box)"
+          >
+            <Square className="w-4 h-4" />
+            <span className="hidden sm:inline">باکس</span>
+          </button>
+
+          {/* Line Tool */}
+          <button
+            onClick={() => setActiveTool('line')}
+            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+              activeTool === 'line'
+                ? 'bg-amber-600 text-stone-950 font-bold shadow'
+                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+            }`}
+            title="لائن مارکر"
+          >
+            <Minus className="w-4 h-4" />
+            <span className="hidden sm:inline">لائن</span>
+          </button>
+
+          {/* Text Tool */}
+          <button
+            onClick={() => {
+              setActiveTool('text');
+              setShowAddTextModal(true);
+            }}
+            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+              activeTool === 'text'
+                ? 'bg-emerald-600 text-stone-950 font-bold shadow'
+                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+            }`}
+            title="نئی تحریر شامل کریں"
+          >
+            <Type className="w-4 h-4" />
+            <span className="hidden sm:inline">تحریر لکھیں</span>
+          </button>
+
+          {/* Undo / Redo */}
+          <div className="flex items-center gap-1 bg-stone-950 border border-stone-800 rounded-xl p-0.5 ml-1">
+            <button
+              onClick={handleUndo}
+              disabled={strokes.length === 0}
+              className="p-1.5 text-stone-400 hover:text-white disabled:opacity-30 rounded-lg cursor-pointer"
+              title="Undo"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={redoStrokes.length === 0}
+              className="p-1.5 text-stone-400 hover:text-white disabled:opacity-30 rounded-lg cursor-pointer"
+              title="Redo"
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Selected Text Manipulator (Move / Font / Color / Delete) */}
+        {selectedTextItem && (
+          <div className="flex items-center gap-1.5 bg-stone-950 border border-emerald-600/50 rounded-2xl px-2 py-1 shadow-md animate-in fade-in">
+            <span className="text-[11px] text-emerald-400 font-bold hidden md:inline">
+              منتخب تحریر موو کریں:
+            </span>
+
+            {/* Nudge Buttons (▲ ▼ ◄ ►) */}
+            <div className="flex items-center gap-0.5 bg-stone-900 p-0.5 rounded-lg border border-stone-800">
+              <button
+                onClick={() => nudgeText(0, -10)}
+                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
+                title="اوپر موو کریں"
+              >
+                <ArrowUp className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => nudgeText(0, 10)}
+                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
+                title="نیچے موو کریں"
+              >
+                <ArrowDown className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => nudgeText(-15, 0)}
+                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
+                title="بائیں موو کریں"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => nudgeText(15, 0)}
+                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
+                title="دائیں موو کریں"
+              >
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Font Size (+ / -) */}
+            <div className="flex items-center gap-1 bg-stone-900 px-1.5 py-0.5 rounded-lg border border-stone-800 text-[11px]">
+              <button
+                onClick={() => updateSelectedTextFontSize(-2)}
+                className="text-stone-400 hover:text-white font-bold px-1"
+              >
+                A-
+              </button>
+              <span className="font-mono">{selectedTextItem.fontSize}</span>
+              <button
+                onClick={() => updateSelectedTextFontSize(2)}
+                className="text-stone-400 hover:text-white font-bold px-1"
+              >
+                A+
+              </button>
+            </div>
+
+            {/* Color switcher */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => updateSelectedTextColor('#065f46')}
+                className="w-4 h-4 rounded-full bg-emerald-800 border border-white/40 cursor-pointer"
+                title="سبز"
+              />
+              <button
+                onClick={() => updateSelectedTextColor('#f59e0b')}
+                className="w-4 h-4 rounded-full bg-amber-500 border border-white/40 cursor-pointer"
+                title="سنہری"
+              />
+              <button
+                onClick={() => updateSelectedTextColor('#1c1917')}
+                className="w-4 h-4 rounded-full bg-stone-900 border border-white/40 cursor-pointer"
+                title="سیاہ"
+              />
+              <button
+                onClick={() => updateSelectedTextColor('#dc2626')}
+                className="w-4 h-4 rounded-full bg-red-600 border border-white/40 cursor-pointer"
+                title="سرخ"
+              />
+            </div>
+
+            {/* Delete button */}
+            <button
+              onClick={deleteSelectedText}
+              className="p-1 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 rounded"
+              title="تحریر مٹائیں"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Top Space Adjuster */}
+        <div className="flex items-center gap-1">
+          <span className="text-[11px] text-stone-400 font-sans hidden sm:inline">اوپر جگہ:</span>
+          <div className="flex items-center bg-stone-950 p-0.5 rounded-xl border border-stone-800 text-[11px]">
+            {(['0', '10', '20', '30'] as const).map((opt) => (
+              <button
+                key={opt}
+                onClick={() => setTopSpaceOption(opt)}
+                className={`px-2 py-0.5 rounded-lg transition-colors cursor-pointer ${
+                  topSpaceOption === opt
+                    ? 'bg-emerald-600 text-stone-950 font-bold'
+                    : 'text-stone-400 hover:text-white'
+                }`}
+              >
+                {opt}%
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Toast Notification */}
       {toastMsg && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-50 bg-stone-950/95 text-amber-300 border border-amber-600 px-4 py-1.5 rounded-xl text-xs font-nastaliq shadow-2xl animate-fade-in">
-          {toastMsg}
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-emerald-400 border border-emerald-600 px-4 py-2 rounded-2xl text-xs font-nastaliq shadow-2xl flex items-center gap-2">
+          <Check className="w-4 h-4" />
+          <span>{toastMsg}</span>
         </div>
       )}
 
-      {/* 3. Main Center Canvas Viewport */}
-      {/* CRITICAL FIX: dir="ltr" ensures the absolute children coordinate origins are strictly at (0,0) without RTL offset bugs! */}
+      {/* 3. MAIN CENTER CANVAS VIEWPORT */}
       <div
         ref={viewportRef}
         className="flex-1 relative overflow-hidden bg-stone-950 flex items-center justify-center p-2"
@@ -521,7 +940,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
           }}
           className="relative flex items-center justify-center shrink-0 transition-all duration-75"
         >
-          {/* Inner 680px Sheet: Exactly scaled with transformOrigin="top left" and left: 0, top: 0 */}
+          {/* Inner 680px Sheet */}
           <div
             style={{
               width: `${SHEET_WIDTH}px`,
@@ -536,372 +955,243 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
             className="absolute bg-white rounded-lg shadow-2xl border border-stone-300 overflow-hidden select-none flex flex-col justify-between"
             dir="rtl"
           >
-            {/* Top Empty Space for Titles & Citations */}
+            {/* Top Space with dashed guideline */}
             <div
               style={{ height: `${topSpacePx}px` }}
-              className="absolute top-0 left-0 right-0 px-6 flex items-center justify-between border-b border-dashed border-stone-200 pointer-events-none"
+              className="absolute top-0 left-0 right-0 px-4 flex items-center justify-between border-b border-dashed border-stone-200 pointer-events-none"
             >
-              <span className="text-[11px] text-stone-400 font-nastaliq">
-                (اوپر خالی جگہ برائے عنوان یا سند)
+              <span className="text-[10px] text-stone-400 font-nastaliq">
+                (اوپر جگہ برائے عنوان، سند و حوالہ)
               </span>
-              <span className="text-xs font-bold text-emerald-700 font-nastaliq">
-                کتاب &quot;احتسابِ ناصبیت&quot; - سند جلد {activeVolume.volumeNumber}
+              <span className="text-xs font-bold text-emerald-800 font-nastaliq">
+                کتاب &quot;احتسابِ ناصبیت&quot; — جلد {activeVolume.volumeNumber}
               </span>
             </div>
 
-            {/* Dual Pages Layout: Title Cover (Side) + Content Page (Side) */}
-            <div className="flex items-center justify-center gap-3 px-4 my-auto">
-              {/* PAGE 1: Book Page (Right in RTL) */}
+            {/* REAL DUAL PAGES: (Side 1: Real Reference Page) + (Side 2: Real Volume Title Page) */}
+            <div className="flex items-center justify-center gap-4 px-4 my-auto relative z-10">
+              {/* PAGE 1: Reference Content Page (Right Side in RTL) */}
               <div
                 style={{ width: `${PAGE_WIDTH}px`, height: `${PAGE_HEIGHT}px` }}
-                className="bg-white rounded p-4 border border-stone-300 shadow-sm text-stone-900 font-serif flex flex-col justify-between overflow-hidden shrink-0"
+                className="bg-white rounded p-1 border border-stone-300 shadow-md flex flex-col justify-between overflow-hidden shrink-0 relative"
               >
-                <div>
-                  <div className="text-center text-[10px] text-stone-500 font-arabic pb-1 mb-2 border-b border-stone-200 flex justify-between items-center">
-                    <span>{currentPage}</span>
-                    <span className="text-emerald-700 font-bold">
-                      احتساب ناصبیت - {activeVolume.volumeTitleUrdu}
-                    </span>
-                    <span>جلد {activeVolume.volumeNumber}</span>
-                  </div>
-
-                  <div className="space-y-1.5 text-right">
-                    <div className="text-center font-bold text-xs font-arabic text-stone-900">
-                      {currentChapter.title || '١٦ ـــ [ المَسُّ النَّاقِضُ ]'}
-                    </div>
-                    <p className="text-[10px] font-arabic leading-relaxed text-justify text-stone-800">
-                      {currentChapter.arabicVerse ||
-                        'وَمَسُّ الذَّكَرِ لَا يَنْقُضُ، وَلَا لَمْسُ الْمَرْأَةِ إِلَّا فِي الْمُبَاشَرَةِ الْفَاحِشَةِ.'}
-                    </p>
-                    <div className="text-center font-bold text-xs font-arabic text-stone-900 pt-1">
-                      ١٧ ـــ [ مُوجِبَاتُ الْغُسْلِ ]
-                    </div>
-                    <p className="text-[10px] font-arabic leading-relaxed text-justify text-stone-800">
-                      {currentChapter.translation ||
-                        'وَيُوجِبُ الْغُسْلَ: دَفْقُ الْمَنِيِّ بِشَهْوَةٍ، نَائِمًا كَانَ أَوْ يَقْظَانًا. وَتَغْيِيبُ الْحَشَفَةِ فِي أَحَدِ السَّبِيلَيْنِ.'}
-                    </p>
-
-                    <div className="flex justify-center gap-2 text-stone-400 py-0.5 text-[10px]">
-                      <span>□</span>
-                      <span>□</span>
-                      <span>□</span>
-                    </div>
-
-                    <div className="pt-1 border-t border-stone-800/80 text-[9px] text-stone-700 font-arabic space-y-0.5">
-                      <p>(۱) ب، د: (مس)، ج: (بمس)۔</p>
-                      <p>(۲) ت، ج: (مباشرة)۔</p>
-                      <p>(۳) ش: وهي ما فوق موضع الختان من رأس الذكر۔</p>
-                      <p>(۴) انظر: فتح الباری، صحیح مسلم بشرح النووی، ج ۱/۱۱۔</p>
-                    </div>
-                  </div>
+                <div className="text-[10px] text-stone-500 font-sans px-2 py-0.5 flex justify-between items-center border-b border-stone-100 bg-stone-50">
+                  <span className="font-bold text-emerald-700">مطلوبہ صفحہ (سند)</span>
+                  <span className="font-mono">ص {currentPage}</span>
                 </div>
 
-                <div className="text-center text-[10px] text-stone-600 font-arabic">
-                  صفحہ {currentPage}
+                {/* Scanned Book Page Image directly from Archive.org */}
+                <div className="flex-1 w-full relative overflow-hidden bg-white flex items-center justify-center">
+                  <img
+                    src={refPageImgUrl}
+                    alt={`صفحہ ${currentPage}`}
+                    crossOrigin="anonymous"
+                    className="max-w-full max-h-full object-contain"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = '/app-logo.png';
+                    }}
+                  />
+                </div>
+
+                <div className="text-center text-[10px] text-stone-600 font-mono py-0.5 bg-stone-50 border-t border-stone-100">
+                  احتساب ناصبیت جلد {activeVolume.volumeNumber} — ص {currentPage}
                 </div>
               </div>
 
-              {/* PAGE 2: Official Leather Gold-Bordered Title Page Cover */}
+              {/* PAGE 2: Official Volume Title / Cover Page (Left Side in RTL) */}
               <div
                 style={{ width: `${PAGE_WIDTH}px`, height: `${PAGE_HEIGHT}px` }}
-                className="bg-stone-950 rounded p-3 border border-stone-800 shadow-sm flex items-center justify-center relative overflow-hidden shrink-0"
+                className="bg-white rounded p-1 border border-stone-300 shadow-md flex flex-col justify-between overflow-hidden shrink-0 relative"
               >
-                <div className="w-full h-full border border-amber-600/70 rounded p-2 flex flex-col items-center justify-between text-center relative bg-gradient-to-b from-stone-900 via-stone-950 to-stone-900 shadow-inner">
-                  {/* Bismillah */}
-                  <div className="text-amber-500/70 text-[9px] font-serif tracking-widest uppercase">
-                    بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ
-                  </div>
+                <div className="text-[10px] text-stone-500 font-sans px-2 py-0.5 flex justify-between items-center border-b border-stone-100 bg-stone-50">
+                  <span className="font-bold text-emerald-700">ٹائٹل / سرورق</span>
+                  <span className="font-mono">ص {titlePageNumber}</span>
+                </div>
 
-                  {/* Main Logo & Title */}
-                  <div className="my-auto space-y-1.5 px-1">
-                    <div className="w-10 h-10 mx-auto rounded-full border border-amber-500/50 flex items-center justify-center p-1 bg-amber-950/40">
-                      <img
-                        src="/app-logo.png"
-                        alt="لوگو"
-                        className="w-full h-full object-contain rounded-full"
-                        onError={(e) => {
-                          e.currentTarget.style.display = 'none';
-                        }}
-                      />
-                    </div>
-                    <h3 className="font-nastaliq text-xl font-bold text-amber-200 drop-shadow-md leading-relaxed">
-                      احتسابِ ناصبیت
-                    </h3>
-                    <p className="font-arabic text-[11px] text-emerald-400 font-semibold">
-                      {activeVolume.volumeTitleUrdu}
-                    </p>
-                    <div className="h-0.5 w-12 mx-auto bg-gradient-to-r from-transparent via-amber-500 to-transparent my-1" />
-                    <p className="text-[9px] text-stone-300 font-urdu-clean leading-relaxed line-clamp-3">
-                      {activeVolume.topic}
-                    </p>
-                  </div>
+                {/* Scanned Title Page Image directly from Archive.org */}
+                <div className="flex-1 w-full relative overflow-hidden bg-white flex items-center justify-center">
+                  <img
+                    src={titlePageImgUrl}
+                    alt="ٹائٹل پیج"
+                    crossOrigin="anonymous"
+                    className="max-w-full max-h-full object-contain"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = '/app-logo.png';
+                    }}
+                  />
+                </div>
 
-                  {/* Bottom Publisher Stamp */}
-                  <div className="text-[8px] text-amber-400/80 font-nastaliq border-t border-amber-800/40 w-full pt-1">
-                    دار النشر والتحقیق • مکتبہ ردِ ناصبیت
-                  </div>
+                <div className="text-center text-[10px] text-stone-600 font-mono py-0.5 bg-stone-50 border-t border-stone-100">
+                  سرورقِ کتاب — {activeVolume.volumeTitleUrdu}
                 </div>
               </div>
             </div>
 
-            {/* Bottom Empty Space for Notes & Footnotes */}
-            <div
-              style={{ height: `${bottomSpacePx}px` }}
-              className="absolute bottom-0 left-0 right-0 px-6 flex items-center justify-between border-t border-dashed border-stone-200 pointer-events-none"
-            >
-              <span className="text-[11px] text-stone-400 font-nastaliq">
-                (نیچے خالی جگہ برائے حواشی و نوٹس)
+            {/* Bottom Watermark / Citation Banner */}
+            <div className="absolute bottom-0 left-0 right-0 h-10 px-4 flex items-center justify-between border-t border-stone-200 bg-stone-50/90 pointer-events-none">
+              <span className="text-[10px] text-stone-500 font-sans">
+                آفیشل ڈیجیٹل ایڈیشن برائے محققین
               </span>
-              <span className="text-[10px] text-stone-500 font-urdu-clean">
-                مستند اسناد و حوالہ جات • مکتبہ ردِ ناصبیت
+              <span className="text-xs font-bold font-nastaliq text-emerald-800">
+                مجموعہ کتب &quot;احتسابِ ناصبیت&quot; مکمل ۱۲ جلدیں
               </span>
             </div>
 
-            {/* Top Interactive Canvas Overlay */}
+            {/* 4. Canvas Drawing Layer (For highlighters, boxes, and underlines) */}
             <canvas
               ref={canvasRef}
+              width={SHEET_WIDTH}
+              height={totalSheetHeight}
               onMouseDown={handlePointerDown}
               onMouseMove={handlePointerMove}
               onMouseUp={handlePointerUp}
               onTouchStart={handlePointerDown}
               onTouchMove={handlePointerMove}
               onTouchEnd={handlePointerUp}
-              className={`absolute inset-0 w-full h-full z-20 ${
-                activeTool === 'move' ? 'cursor-grab' : 'cursor-crosshair'
+              className={`absolute inset-0 z-20 ${
+                activeTool === 'move' ? 'pointer-events-none' : 'cursor-crosshair'
               }`}
             />
 
-            {/* In-Canvas Text Insertion Input Box */}
-            {textInputPos && (
-              <div
-                style={{
-                  left: `${Math.min(480, Math.max(10, textInputPos.x))}px`,
-                  top: `${Math.max(10, textInputPos.y - 40)}px`,
-                }}
-                className="absolute z-30 bg-stone-900 border-2 border-emerald-500 p-1.5 rounded-xl shadow-2xl flex items-center gap-1.5"
+            {/* 5. Draggable Movable Text Elements (Requirement 2) */}
+            <div className="absolute inset-0 z-30 pointer-events-none">
+              {textList.map((item) => {
+                const isSelected = item.id === selectedTextId;
+                return (
+                  <div
+                    key={item.id}
+                    onMouseDown={(e) => handleTextMouseDown(item.id, e)}
+                    onTouchStart={(e) => handleTextMouseDown(item.id, e)}
+                    style={{
+                      left: `${item.x}px`,
+                      top: `${item.y}px`,
+                      transform: 'translate(-50%, -50%)',
+                      fontSize: `${item.fontSize}px`,
+                      color: item.color,
+                      backgroundColor: item.bgColor,
+                    }}
+                    className={`absolute pointer-events-auto cursor-move px-2.5 py-1 rounded-md transition-shadow font-nastaliq leading-normal text-center ${
+                      isSelected
+                        ? 'ring-2 ring-emerald-500 ring-offset-2 shadow-xl'
+                        : 'hover:ring-1 hover:ring-stone-400'
+                    }`}
+                  >
+                    <span>{item.text}</span>
+                    {isSelected && (
+                      <div className="absolute -top-3 -right-3 w-5 h-5 bg-emerald-600 text-white rounded-full flex items-center justify-center text-[10px] shadow pointer-events-none">
+                        <Move className="w-3 h-3" />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. BOTTOM BAR: Page Jumper & Quick Text Insertion */}
+      <footer className="h-14 bg-stone-900 border-t border-stone-800 px-4 flex items-center justify-between text-xs shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-stone-400 font-sans text-xs">صفحہ تبدیل کریں:</span>
+          <input
+            type="number"
+            min="1"
+            max={activeVolume.pageCount || 476}
+            value={currentPage}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              if (!isNaN(val)) {
+                setCurrentPage(Math.max(1, Math.min(activeVolume.pageCount || 476, val)));
+              }
+            }}
+            className="w-16 h-8 text-center bg-stone-950 border border-stone-700 rounded-lg text-emerald-400 font-mono font-bold"
+          />
+          <span className="text-stone-400 font-sans text-xs">/ {activeVolume.pageCount || 476}</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAddTextModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-emerald-400 border border-stone-700 cursor-pointer font-sans"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>نئی تحریر شامل کریں</span>
+          </button>
+        </div>
+      </footer>
+
+      {/* ADD NEW TEXT MODAL */}
+      {showAddTextModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-stone-900 border border-stone-700 rounded-2xl p-5 shadow-2xl animate-in zoom-in-95">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-800 mb-3">
+              <h3 className="font-nastaliq text-lg font-bold text-amber-300">
+                سند پر نئی تحریر شامل کریں
+              </h3>
+              <button
+                onClick={() => setShowAddTextModal(false)}
+                className="text-stone-400 hover:text-white"
               >
-                <input
-                  type="text"
-                  placeholder="تحریر لکھیں..."
-                  value={currentTextInput}
-                  onChange={(e) => setCurrentTextInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddText()}
-                  className="bg-stone-950 text-white text-xs px-2 py-1 rounded font-nastaliq focus:outline-none w-40"
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddNewTextSubmit} className="space-y-4">
+              <div>
+                <label className="text-xs text-stone-300 block mb-1 font-sans">
+                  تحریر / نوٹ / عنوان لکھیں:
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="مثلاً: اہم حوالہ در تحقیق و اثبات شہادت امام حسین..."
+                  value={newTextInput}
+                  onChange={(e) => setNewTextInput(e.target.value)}
+                  className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 placeholder-stone-500 focus:outline-none focus:border-emerald-500 font-nastaliq text-sm"
                   autoFocus
                 />
+              </div>
+
+              <div>
+                <label className="text-xs text-stone-300 block mb-1 font-sans">
+                  رنگ منتخب فرمائیں:
+                </label>
+                <div className="flex items-center gap-2">
+                  {COLOR_OPTIONS.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setSelectedColor(c.value)}
+                      style={{ backgroundColor: c.value }}
+                      className={`w-7 h-7 rounded-full border-2 transition-transform cursor-pointer ${
+                        selectedColor === c.value ? 'scale-110 border-white' : 'border-transparent'
+                      }`}
+                      title={c.label}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
                 <button
-                  onClick={handleAddText}
-                  className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs rounded font-bold cursor-pointer"
+                  type="button"
+                  onClick={() => setShowAddTextModal(false)}
+                  className="px-4 py-1.5 rounded-xl bg-stone-800 text-stone-300 text-xs"
                 >
-                  داخل
+                  منسوخ کریں
                 </button>
                 <button
-                  onClick={() => setTextInputPos(null)}
-                  className="text-stone-400 hover:text-white text-xs px-1 cursor-pointer"
+                  type="submit"
+                  disabled={!newTextInput.trim()}
+                  className="px-5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-stone-950 font-bold text-xs shadow-lg cursor-pointer"
                 >
-                  ✕
+                  تحریر شامل کریں
                 </button>
               </div>
-            )}
+            </form>
           </div>
         </div>
-
-        {/* Floating Zoom & Fit Controls */}
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-30 bg-stone-800/90 text-stone-200 border border-stone-700 rounded-full px-3 py-1 flex items-center gap-3 text-xs shadow-xl backdrop-blur-sm">
-          <button
-            onClick={() => setZoomPercent(100)}
-            className="p-1 hover:text-white cursor-pointer"
-            title="فٹ ٹو سکرین"
-          >
-            <Maximize2 className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setZoomPercent((z) => Math.min(200, z + 15))}
-            className="p-1 hover:text-white font-bold cursor-pointer"
-            title="زوم ان"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <span className="font-mono text-amber-300 font-bold px-1">{zoomPercent}%</span>
-          <button
-            onClick={() => setZoomPercent((z) => Math.max(40, z - 15))}
-            className="p-1 hover:text-white font-bold cursor-pointer"
-            title="زوم آؤٹ"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-
-      {/* 4. Bottom Controls Panel */}
-      <div className="bg-[#f9fafb] text-stone-900 border-t border-stone-200 rounded-t-3xl shadow-2xl px-3 py-2.5 sm:px-6 sm:py-3.5 space-y-2.5 shrink-0 z-40">
-        {/* 5 Main Tool Buttons */}
-        <div className="grid grid-cols-5 gap-2 max-w-lg mx-auto">
-          {/* Highlight Tool */}
-          <button
-            onClick={() => setActiveTool('highlight')}
-            className={`flex flex-col items-center justify-center p-1.5 sm:p-2 rounded-2xl border transition-all cursor-pointer ${
-              activeTool === 'highlight'
-                ? 'border-2 border-emerald-600 bg-emerald-50 text-emerald-800 shadow-sm'
-                : 'border-stone-200 bg-white hover:bg-stone-50 text-stone-700'
-            }`}
-          >
-            <div className="relative">
-              <Highlighter className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-700" />
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400" />
-            </div>
-            <span className="text-[11px] sm:text-xs font-nastaliq font-bold mt-1">نشان</span>
-          </button>
-
-          {/* Box Tool */}
-          <button
-            onClick={() => setActiveTool('box')}
-            className={`flex flex-col items-center justify-center p-1.5 sm:p-2 rounded-2xl border transition-all cursor-pointer ${
-              activeTool === 'box'
-                ? 'border-2 border-emerald-600 bg-emerald-50 text-emerald-800 shadow-sm'
-                : 'border-stone-200 bg-white hover:bg-stone-50 text-stone-700'
-            }`}
-          >
-            <div className="relative">
-              <Square className="w-4 h-4 sm:w-5 sm:h-5 text-stone-700" />
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-rose-500" />
-            </div>
-            <span className="text-[11px] sm:text-xs font-nastaliq font-bold mt-1">باکس</span>
-          </button>
-
-          {/* Line Tool */}
-          <button
-            onClick={() => setActiveTool('line')}
-            className={`flex flex-col items-center justify-center p-1.5 sm:p-2 rounded-2xl border transition-all cursor-pointer ${
-              activeTool === 'line'
-                ? 'border-2 border-emerald-600 bg-emerald-50 text-emerald-800 shadow-sm'
-                : 'border-stone-200 bg-white hover:bg-stone-50 text-stone-700'
-            }`}
-          >
-            <div className="relative">
-              <Minus className="w-4 h-4 sm:w-5 sm:h-5 text-stone-700" />
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-rose-500" />
-            </div>
-            <span className="text-[11px] sm:text-xs font-nastaliq font-bold mt-1">لائن</span>
-          </button>
-
-          {/* Text Tool */}
-          <button
-            onClick={() => setActiveTool('text')}
-            className={`flex flex-col items-center justify-center p-1.5 sm:p-2 rounded-2xl border transition-all cursor-pointer ${
-              activeTool === 'text'
-                ? 'border-2 border-emerald-600 bg-emerald-50 text-emerald-800 shadow-sm'
-                : 'border-stone-200 bg-white hover:bg-stone-50 text-stone-700'
-            }`}
-          >
-            <div className="relative">
-              <Type className="w-4 h-4 sm:w-5 sm:h-5 text-stone-800" />
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-stone-900" />
-            </div>
-            <span className="text-[11px] sm:text-xs font-nastaliq font-bold mt-1">متن</span>
-          </button>
-
-          {/* Move Tool */}
-          <button
-            onClick={() => setActiveTool('move')}
-            className={`flex flex-col items-center justify-center p-1.5 sm:p-2 rounded-2xl border transition-all cursor-pointer ${
-              activeTool === 'move'
-                ? 'border-2 border-emerald-600 bg-emerald-50 text-emerald-800 shadow-sm'
-                : 'border-stone-200 bg-white hover:bg-stone-50 text-stone-700'
-            }`}
-          >
-            <Move className="w-4 h-4 sm:w-5 sm:h-5 text-stone-700" />
-            <span className="text-[11px] sm:text-xs font-nastaliq font-bold mt-1">منتقل</span>
-          </button>
-        </div>
-
-        {/* Color Palette Selector */}
-        <div className="flex items-center justify-between max-w-lg mx-auto">
-          <div className="flex items-center gap-2.5">
-            {COLOR_OPTIONS.map((col) => {
-              const isSelected = selectedColor === col.value;
-              return (
-                <button
-                  key={col.id}
-                  onClick={() => setSelectedColor(col.value)}
-                  style={{ backgroundColor: col.value }}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-transform shadow cursor-pointer ${
-                    isSelected ? 'scale-110 ring-2 ring-emerald-600 ring-offset-2' : 'hover:scale-105'
-                  }`}
-                  title={col.label}
-                >
-                  {isSelected && <Check className="w-4 h-4 text-stone-900 stroke-[3]" />}
-                </button>
-              );
-            })}
-          </div>
-          <span className="text-xs font-nastaliq font-bold text-stone-600">رنگ</span>
-        </div>
-
-        {/* Intensity Slider */}
-        <div className="flex items-center justify-between gap-3 max-w-lg mx-auto">
-          <span className="text-xs font-mono font-bold text-stone-600 w-9">{intensity}%</span>
-          <input
-            type="range"
-            min="20"
-            max="100"
-            value={intensity}
-            onChange={(e) => setIntensity(Number(e.target.value))}
-            className="flex-1 h-1.5 bg-stone-300 rounded-lg appearance-none cursor-pointer accent-emerald-600"
-          />
-          <span className="text-xs font-nastaliq font-bold text-stone-600">شدت</span>
-        </div>
-
-        {/* Top Space Options */}
-        <div className="flex items-center justify-between max-w-lg mx-auto pt-0.5">
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setTopSpaceOption('30')}
-              className={`px-2.5 py-0.5 text-xs rounded-lg border transition-colors cursor-pointer ${
-                topSpaceOption === '30'
-                  ? 'bg-emerald-100 text-emerald-800 border-emerald-500 font-bold'
-                  : 'bg-white text-stone-600 border-stone-200'
-              }`}
-            >
-              30%
-            </button>
-            <button
-              onClick={() => setTopSpaceOption('20')}
-              className={`px-2.5 py-0.5 text-xs rounded-lg border transition-colors cursor-pointer ${
-                topSpaceOption === '20'
-                  ? 'bg-emerald-100 text-emerald-800 border-emerald-500 font-bold'
-                  : 'bg-white text-stone-600 border-stone-200'
-              }`}
-            >
-              20%
-            </button>
-            <button
-              onClick={() => setTopSpaceOption('10')}
-              className={`px-2.5 py-0.5 text-xs rounded-lg border transition-colors cursor-pointer ${
-                topSpaceOption === '10'
-                  ? 'bg-emerald-100 text-emerald-800 border-emerald-500 font-bold'
-                  : 'bg-white text-stone-600 border-stone-200'
-              }`}
-            >
-              10%
-            </button>
-            <button
-              onClick={() => setTopSpaceOption('0')}
-              className={`px-2.5 py-0.5 text-xs rounded-lg border transition-colors flex items-center gap-1 cursor-pointer ${
-                topSpaceOption === '0'
-                  ? 'bg-emerald-600 text-white border-emerald-600 font-bold'
-                  : 'bg-white text-stone-600 border-stone-200'
-              }`}
-            >
-              {topSpaceOption === '0' && <Check className="w-3 h-3" />}
-              <span>بند</span>
-            </button>
-          </div>
-          <span className="text-xs font-nastaliq font-bold text-stone-600">اوپر جگہ</span>
-        </div>
-      </div>
+      )}
     </div>
   );
 };
-
-export default ScreenEditorModal;

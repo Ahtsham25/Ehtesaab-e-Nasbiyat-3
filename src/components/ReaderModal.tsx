@@ -1,43 +1,36 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import * as pdfjsLib from 'pdfjs-dist';
 import {
-  X,
-  Maximize2,
-  Minimize2,
   Download,
   Bookmark,
-  ChevronLeft,
-  ChevronRight,
   ChevronUp,
   ChevronDown,
-  BookOpen,
   CheckCircle2,
-  RotateCcw,
-  Sun,
-  Moon,
-  Coffee,
-  Sparkles,
   ArrowRight,
   Share2,
-  ZoomIn,
-  ZoomOut,
-  Highlighter,
-  MoreVertical,
   Camera,
   Scissors,
-  FileText,
   PenTool,
-  Columns2,
-  RefreshCw,
-  FileUp,
   RotateCw,
-  List
+  MoreVertical,
+  BookOpen,
+  AlertCircle,
+  RefreshCw,
+  Sparkles
 } from 'lucide-react';
-import { VolumeData, getReadingProgress, HighlightItem } from '../types/book';
-import { BOOK_VOLUMES_CONTENT, ChapterItem } from '../data/bookContent';
+import { VolumeData, HighlightItem } from '../types/book';
+import { resolveVolumeArchiveId, resolveVolumePdfUrl, VERIFIED_ARCHIVE_VOLUMES } from '../utils/archiveUtils';
+import { loadPdfDocument, fetchPdfArrayBuffer } from '../utils/pdfLoader';
 import { CanvasDrawer } from './CanvasDrawer';
 import { DualPageEditorModal } from './DualPageEditorModal';
-import { InternalPdfViewer } from './InternalPdfViewer';
 import { recordRecentRead } from '../utils/readingHistory';
+import {
+  triggerDirectDownload,
+  saveSnapshotToStorage,
+  saveBookToInternalStorage,
+  getBookFromInternalStorage
+} from '../utils/offlineStorage';
+import { getDrawingForPage } from '../utils/drawingStorage';
 
 interface ReaderModalProps {
   volume: VolumeData | null;
@@ -59,93 +52,230 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   isBookmarked,
   onToggleBookmark,
   onUpdateProgress,
-  onAddHighlight,
-  highlights = [],
 }) => {
-  // Mode: 'archive-page' (direct scanned book pages as in user screenshot) vs 'text' (Unicode chapters) vs 'local-pdf'
-  const [activeMode, setActiveMode] = useState<'archive-page' | 'text' | 'local-pdf'>('archive-page');
+  // 100% Full-Book Preloading States
+  const [isBookLoaded, setIsBookLoaded] = useState<boolean>(false);
+  const [loadingProgress, setLoadingProgress] = useState<number>(0);
+  const [loadingStatus, setLoadingStatus] = useState<string>('کتاب کا ڈیٹا ڈاؤن لوڈ ہو رہا ہے...');
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // PDF Document in Memory
+  const [doc, setDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [totalPages, setTotalPages] = useState<number>(476);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageInput, setPageInput] = useState<string>('1');
+
+  // Viewer options
   const [theme, setTheme] = useState<ReaderTheme>('day');
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isDrawMode, setIsDrawMode] = useState<boolean>(false);
   const [showDualEditor, setShowDualEditor] = useState<boolean>(false);
   const [showOptionsMenu, setShowOptionsMenu] = useState<boolean>(false);
-  const [showToc, setShowToc] = useState<boolean>(false);
-  const [showVolumeHighlights, setShowVolumeHighlights] = useState<boolean>(false);
-
-  // Page tracking
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [pageInput, setPageInput] = useState<string>('1');
-  const [imageLoading, setImageLoading] = useState<boolean>(true);
-  const [imageError, setImageError] = useState<boolean>(false);
-  const [zoomLevel, setZoomLevel] = useState<number>(100);
   const [rotation, setRotation] = useState<number>(0);
+  const [zoomLevel, setZoomLevel] = useState<number>(100);
 
   // Toast notifications
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  // Text selection & Highlight popup state (in text mode)
-  const [selectedText, setSelectedText] = useState<string>('');
-  const [highlightCoords, setHighlightCoords] = useState<{ x: number; y: number } | null>(null);
-  const [highlightColor, setHighlightColor] = useState<string>('#f59e0b');
-  const [highlightNote, setHighlightNote] = useState<string>('');
-  const [showNoteInput, setShowNoteInput] = useState(false);
 
   // Swipe & Touch Gestures
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchStartY, setTouchStartY] = useState<number | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // DOM Canvas References
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const renderTaskRef = useRef<any>(null);
 
-  // Derive total pages and archive item ID
-  const archiveId = volume?.archiveItemId || '1_20261016_20261016_1311';
-  const totalPages = volume?.pageCount && volume.pageCount > 0 ? volume.pageCount : 476;
-  const progressPct = getReadingProgress(currentPage, totalPages);
+  // Guard against reloading when page progress updates volume object reference
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const loadedVolumeIdRef = useRef<number | null>(null);
+  const loadingInProgressRef = useRef<boolean>(false);
 
-  const volumeContent = volume ? (BOOK_VOLUMES_CONTENT[volume.volumeNumber] || BOOK_VOLUMES_CONTENT[1]) : BOOK_VOLUMES_CONTENT[1];
-  const chapters = volumeContent.chapters || [];
+  // Verified URL & Archive IDs
+  const archiveId = volume ? resolveVolumeArchiveId(volume.volumeNumber, volume.archiveItemId) : '1_20261016_20261016_1311';
+  const realPdfUrl = volume ? resolveVolumePdfUrl(volume.volumeNumber, volume.pdfUrl) : '';
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Sync initial page
-  useEffect(() => {
-    if (volume) {
-      const initialPage = volume.lastReadPage && volume.lastReadPage > 0 ? volume.lastReadPage : 1;
-      setCurrentPage(initialPage);
-      setPageInput(String(initialPage));
-      try {
-        recordRecentRead(volume, initialPage);
-      } catch {}
-    }
-  }, [volume]);
+  // Full 100% Book Preloader & Loader: Runs ONCE per book volume
+  const loadEntireBook100Percent = useCallback(async (forceReload = false) => {
+    const vol = volumeRef.current;
+    if (!vol) return;
 
-  // Preload adjacent pages for instant flipping
-  useEffect(() => {
-    if (archiveId && activeMode === 'archive-page') {
-      const nextP = currentPage + 1;
-      const prevP = currentPage - 1;
-      if (nextP <= totalPages) {
-        const imgNext = new Image();
-        imgNext.src = `https://archive.org/download/${archiveId}/page/n${nextP}_w1200.jpg`;
-      }
-      if (prevP >= 1) {
-        const imgPrev = new Image();
-        imgPrev.src = `https://archive.org/download/${archiveId}/page/n${prevP}_w1200.jpg`;
-      }
+    // CRITICAL: If this book volume is already fully loaded in memory, DO NOT reload or reset state!
+    if (!forceReload && loadedVolumeIdRef.current === vol.id && doc) {
+      return;
     }
-  }, [archiveId, currentPage, totalPages, activeMode]);
+
+    if (loadingInProgressRef.current) return;
+    loadingInProgressRef.current = true;
+
+    setIsBookLoaded(false);
+    setLoadError(null);
+    setLoadingProgress(5);
+    setLoadingStatus('کتاب کی فائل کا جائزہ لیا جا رہا ہے...');
+
+    const initialP = vol.lastReadPage && vol.lastReadPage > 0 ? vol.lastReadPage : 1;
+    setCurrentPage(initialP);
+    setPageInput(String(initialP));
+
+    try {
+      // 1. Check if full book is already saved in internal IndexedDB
+      const storedRecord = await getBookFromInternalStorage(vol.id);
+      let buffer: ArrayBuffer | null = null;
+
+      if (storedRecord && storedRecord.blob) {
+        setLoadingStatus('انٹرنل اسٹوریج سے کتاب کے اوراق لوڈ ہو رہے ہیں...');
+        setLoadingProgress(90);
+        buffer = await storedRecord.blob.arrayBuffer();
+      }
+
+      // 2. If not stored locally, download entire book 100% with live progress tracking
+      if (!buffer) {
+        setLoadingStatus('پوری کتاب ڈاؤن لوڈ ہو رہی ہے (100% مکمل ہونے پر کھلے گی)...');
+        buffer = await fetchPdfArrayBuffer(realPdfUrl, (pct) => {
+          setLoadingProgress(pct);
+          setLoadingStatus(`کتاب ڈاؤن لوڈ ہو رہی ہے: ${pct}%`);
+        });
+
+        // Save downloaded blob in IndexedDB for instant future access
+        try {
+          await saveBookToInternalStorage({
+            volumeId: vol.id,
+            volumeNumber: vol.volumeNumber,
+            titleUrdu: vol.volumeTitleUrdu,
+            fileSize: vol.fileSize || '35 MB',
+            downloadedAt: new Date().toLocaleDateString('ur-PK'),
+            blob: new Blob([buffer], { type: 'application/pdf' }),
+          });
+        } catch {}
+      }
+
+      // 3. Initialize PDF.js Document from 100% loaded buffer
+      setLoadingProgress(100);
+      setLoadingStatus('کتاب کے اوراق مکمل تیار ہو چکے ہیں...');
+
+      const loadedDoc = await loadPdfDocument({ data: buffer });
+      setDoc(loadedDoc);
+      loadedVolumeIdRef.current = vol.id;
+      const total = loadedDoc.numPages || vol.pageCount || 476;
+      setTotalPages(total);
+      setIsBookLoaded(true);
+
+      try {
+        recordRecentRead(vol, initialP);
+      } catch {}
+    } catch (err: any) {
+      console.warn('Failed to load full PDF book:', err);
+      setLoadError(err.message || 'کتاب کی مکمل فائل ڈاؤن لوڈ کرنے میں دشواری پیش آئی۔ برائے مہربانی اپنا انٹرنیٹ چیک کریں یا دوبارہ کوشش فرمائیں۔');
+    } finally {
+      loadingInProgressRef.current = false;
+    }
+  }, [realPdfUrl, doc]);
+
+  // Initial load - ONLY executes when book volume ID changes, NEVER on page turns
+  useEffect(() => {
+    if (volume && loadedVolumeIdRef.current !== volume.id) {
+      loadEntireBook100Percent();
+    }
+  }, [volume?.id, loadEntireBook100Percent]);
+
+  // Render Page to Canvas instantly from in-memory document
+  const renderCurrentPage = useCallback(
+    async (pageNum: number) => {
+      if (!doc || !canvasRef.current) return;
+
+      try {
+        const page = await doc.getPage(pageNum);
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // High resolution rendering for sharp Nastaliq text
+        const dpr = Math.min(window.devicePixelRatio || 1.5, 2.5);
+        const unscaledViewport = page.getViewport({ scale: 1.0, rotation });
+
+        const containerWidth = containerRef.current ? containerRef.current.clientWidth - 24 : 800;
+        const autoScale = Math.min(2.5, Math.max(0.7, (containerWidth / unscaledViewport.width) * (zoomLevel / 100)));
+        const viewport = page.getViewport({ scale: autoScale, rotation });
+
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
+
+        if (renderTaskRef.current) {
+          try {
+            renderTaskRef.current.cancel();
+          } catch {}
+          renderTaskRef.current = null;
+        }
+
+        const task = page.render({
+          canvasContext: ctx,
+          viewport: viewport,
+        });
+        renderTaskRef.current = task;
+        await task.promise;
+        renderTaskRef.current = null;
+
+        // Silent background preload of adjacent pages for instantaneous swipe transitions
+        if (pageNum < totalPages) {
+          doc.getPage(pageNum + 1).catch(() => {});
+        }
+        if (pageNum > 1) {
+          doc.getPage(pageNum - 1).catch(() => {});
+        }
+      } catch (err: any) {
+        if (err?.name !== 'RenderingCancelledException') {
+          console.warn('Page render error:', err);
+        }
+      }
+    },
+    [doc, rotation, zoomLevel, totalPages]
+  );
+
+  // Render whenever page or doc or rotation changes
+  useEffect(() => {
+    if (isBookLoaded && doc) {
+      renderCurrentPage(currentPage);
+    }
+  }, [isBookLoaded, doc, currentPage, rotation, zoomLevel, renderCurrentPage]);
+
+  // Hardware / Browser Back Button & Escape Key handling
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    window.history.pushState({ modal: 'reader' }, '');
+    const handlePopState = () => {
+      onClose();
+    };
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [onClose]);
 
   if (!volume) return null;
 
-  // Handle page navigation
+  // Handle instantaneous page navigation
   const handlePageChange = (newPage: number) => {
     const clamped = Math.max(1, Math.min(newPage, totalPages));
     setCurrentPage(clamped);
     setPageInput(String(clamped));
-    setImageLoading(true);
-    setImageError(false);
     onUpdateProgress(volume.id, clamped);
     try {
       recordRecentRead(volume, clamped);
@@ -172,7 +302,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     }
   };
 
-  // Swipe handlers (RTL: swipe left = next page, swipe right = previous page)
+  // Touch Swipe (RTL: swipe left = next page, swipe right = previous page)
   const handleTouchStart = (e: React.TouchEvent) => {
     setTouchStartX(e.touches[0].clientX);
     setTouchStartY(e.touches[0].clientY);
@@ -183,12 +313,10 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     const diffX = touchStartX - e.changedTouches[0].clientX;
     const diffY = touchStartY - e.changedTouches[0].clientY;
 
-    if (Math.abs(diffX) > 45 && Math.abs(diffX) > Math.abs(diffY)) {
+    if (Math.abs(diffX) > 40 && Math.abs(diffX) > Math.abs(diffY)) {
       if (diffX > 0) {
-        // Swiped left -> Next page
         handleNextPage();
       } else {
-        // Swiped right -> Previous page
         handlePrevPage();
       }
     }
@@ -196,11 +324,61 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     setTouchStartY(null);
   };
 
-  // Screenshot / Snapshot capture
-  const handleTakeSnapshot = () => {
-    const pageUrl = `https://archive.org/download/${archiveId}/page/n${currentPage}_w1200.jpg`;
-    window.open(pageUrl, '_blank');
-    showToast('صفحہ کی تصویر الگ ٹیب میں کھل گئی!');
+  // Direct In-App Screenshot Capture & Download without navigating to Archive.org
+  const handleTakeSnapshot = async () => {
+    if (!canvasRef.current) return;
+    try {
+      showToast('اسکرین شاٹ تیار ہو رہا ہے...');
+
+      // Create export canvas from the rendered canvas + drawings
+      const sourceCanvas = canvasRef.current;
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = sourceCanvas.width;
+      exportCanvas.height = sourceCanvas.height;
+      const ctx = exportCanvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas not supported');
+
+      // Draw base rendered page
+      ctx.drawImage(sourceCanvas, 0, 0);
+
+      // Composite any user freehand annotations drawn on this page
+      try {
+        const pageDrawingDataUrl = getDrawingForPage(volume.id, currentPage);
+        if (pageDrawingDataUrl) {
+          const drawImg = new Image();
+          drawImg.src = pageDrawingDataUrl;
+          await new Promise<void>((r) => {
+            drawImg.onload = () => r();
+            drawImg.onerror = () => r();
+          });
+          ctx.drawImage(drawImg, 0, 0, exportCanvas.width, exportCanvas.height);
+        }
+      } catch {}
+
+      exportCanvas.toBlob((blob) => {
+        if (!blob) throw new Error('Blob creation failed');
+        const filename = `Ehtisab_Nasbiyat_Vol_${volume.volumeNumber}_Page_${currentPage}.jpg`;
+        triggerDirectDownload(blob, filename);
+
+        // Save to internal gallery storage
+        try {
+          const dataUrl = exportCanvas.toDataURL('image/jpeg', 0.85);
+          saveSnapshotToStorage({
+            id: `snap-${volume.volumeNumber}-${currentPage}-${Date.now()}`,
+            volumeId: volume.id,
+            volumeNumber: volume.volumeNumber,
+            volumeTitleUrdu: volume.volumeTitleUrdu,
+            page: currentPage,
+            capturedAt: new Date().toLocaleDateString('ur-PK'),
+            dataUrl,
+          });
+        } catch {}
+
+        showToast('صفحہ کا اسکرین شاٹ ڈیوائس پر ڈاؤن لوڈ ہو گیا!');
+      }, 'image/jpeg', 0.95);
+    } catch {
+      showToast('اسکرین شاٹ محفوظ کرنے میں دشواری پیش آئی۔');
+    }
   };
 
   // Share handler
@@ -214,22 +392,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     }
   };
 
-  // Snip / Crop reference
   const handleSnipTool = () => {
     setShowDualEditor(true);
   };
-
-  // Local PDF file picker
-  const handleLocalFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setActiveMode('local-pdf');
-      setShowOptionsMenu(false);
-      showToast('مقامی فائل لوڈ ہو رہی ہے...');
-    }
-  };
-
-  const currentArchiveImageUrl = `https://archive.org/download/${archiveId}/page/n${currentPage}_w1200.jpg`;
 
   // Reading Theme styles
   const getThemeBg = () => {
@@ -258,39 +423,55 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-stone-100 select-none overflow-hidden font-sans">
-      {/* 1. TOP MAIN HEADER (Matches user screenshot: Green title + document icon + back arrow) */}
-      <header className="h-14 bg-white border-b border-stone-200 px-4 flex items-center justify-between z-30 shrink-0">
-        {/* Left: Green Document / Book Icon */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowToc(!showToc)}
-            className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-colors cursor-pointer"
-            title="فہرستِ ابواب و فصول"
-          >
-            <BookOpen className="w-5 h-5 text-emerald-600" />
-          </button>
+      {/* 1. SLIM TOP LOADING PROGRESS BAR (Visible at the very top of the reader while book loads) */}
+      {!isBookLoaded && (
+        <div className="w-full h-1 bg-stone-200 shrink-0 relative overflow-hidden z-40">
+          <div
+            className="h-full bg-gradient-to-r from-emerald-600 via-amber-500 to-emerald-500 transition-all duration-200 shadow-xs"
+            style={{ width: `${Math.max(3, loadingProgress)}%` }}
+          />
+        </div>
+      )}
+
+      {/* 2. TOP MAIN HEADER: Centered Title + Live Loading Percentage + Prominent Back Button */}
+      <header className="h-14 bg-white border-b border-stone-200 px-3 sm:px-5 flex items-center justify-between z-30 shrink-0 shadow-xs">
+        {/* Left: Live Loading Percentage Badge / Indicator */}
+        <div className="w-20 sm:w-36 flex items-center justify-start">
+          {!isBookLoaded ? (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-300 text-emerald-800 text-[11px] sm:text-xs font-mono font-bold shadow-xs animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-emerald-600" />
+              <span>{loadingProgress}% لوڈنگ</span>
+            </div>
+          ) : (
+            <div className="text-[11px] text-stone-400 font-sans hidden sm:block">
+              جلد {volume.volumeNumber}
+            </div>
+          )}
         </div>
 
-        {/* Center: Urdu Book Title in Emerald Green */}
-        <div className="flex-1 text-center px-2">
-          <h1 className="font-nastaliq text-xl sm:text-2xl font-bold text-emerald-600 tracking-wide inline-flex items-center gap-2">
+        {/* Center: Urdu Book Title in Emerald Green (Matches attached screenshot) */}
+        <div className="flex-1 text-center px-1 truncate flex items-center justify-center gap-2">
+          <h1 className="font-nastaliq text-base sm:text-xl font-bold text-emerald-700 tracking-wide inline-flex items-center gap-1 sm:gap-2">
             <span>احتساب ناصبیت</span>
-            <span className="text-emerald-700/80 font-normal">—</span>
-            <span className="text-emerald-700">{volume.volumeTitleUrdu}</span>
+            <span className="text-emerald-600 font-normal">—</span>
+            <span className="text-emerald-800">{volume.volumeTitleUrdu}</span>
           </h1>
         </div>
 
-        {/* Right: Back Arrow Button (RTL back arrow) */}
-        <button
-          onClick={onClose}
-          className="p-2 text-stone-700 hover:text-stone-950 hover:bg-stone-100 rounded-xl transition-colors cursor-pointer"
-          title="بند کریں اور واپس جائیں"
-        >
-          <ArrowRight className="w-6 h-6" />
-        </button>
+        {/* Right: PROMINENT BACK BUTTON (Unmissable, labeled with text and arrow) */}
+        <div className="flex items-center justify-end">
+          <button
+            onClick={onClose}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-100 hover:bg-emerald-50 text-stone-800 hover:text-emerald-800 border border-stone-300 font-bold text-xs sm:text-sm cursor-pointer shadow-xs transition-all active:scale-95"
+            title="کتاب بند کریں اور فہرست کتب پر واپس جائیں"
+          >
+            <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-700 stroke-[2.5]" />
+            <span className="font-nastaliq text-sm sm:text-base font-bold">واپس جائیں</span>
+          </button>
+        </div>
       </header>
 
-      {/* 2. SECONDARY TOOLBAR STRIP (Matches user screenshot icons and page jumper) */}
+      {/* 2. SECONDARY TOOLBAR STRIP (Matches screenshot icons and page jumper) */}
       <div className="h-11 bg-white border-b border-stone-200 px-3 flex items-center justify-between text-stone-700 text-xs z-20 shrink-0">
         {/* Left Icons Strip */}
         <div className="flex items-center gap-1 sm:gap-2">
@@ -301,7 +482,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
               className={`p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer ${
                 showOptionsMenu ? 'bg-stone-200 text-stone-900' : 'text-stone-700'
               }`}
-              title="مزید آپشنز"
+              title="مزید ترتیبات"
             >
               <MoreVertical className="w-4 h-4" />
             </button>
@@ -374,16 +555,6 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
 
                 <button
                   onClick={() => {
-                    fileInputRef.current?.click();
-                  }}
-                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-stone-50 flex items-center justify-between cursor-pointer"
-                >
-                  <span className="font-sans">ڈیوائس سے پی ڈی ایف کھولیں</span>
-                  <FileUp className="w-3.5 h-3.5 text-stone-500" />
-                </button>
-
-                <button
-                  onClick={() => {
                     onToggleBookmark(volume.id);
                     setShowOptionsMenu(false);
                   }}
@@ -405,20 +576,20 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
             <Share2 className="w-4 h-4" />
           </button>
 
-          {/* Camera / Snapshot */}
+          {/* Camera / Snapshot (Direct Device Download) */}
           <button
             onClick={handleTakeSnapshot}
-            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer"
-            title="صفحہ کی تصویر کیپچر کریں"
+            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer text-emerald-700"
+            title="صفحہ کی تصویر کیپچر اور ڈیوائس پر محفوظ کریں"
           >
             <Camera className="w-4 h-4" />
           </button>
 
-          {/* Download */}
+          {/* Download Book (Direct In-App Download) */}
           <button
             onClick={() => onDownload(volume)}
-            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer"
-            title="پی ڈی ایف ڈاؤن لوڈ کریں"
+            className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer text-amber-700"
+            title="کتاب پی ڈی ایف براہِ راست ڈاؤن لوڈ کریں"
           >
             <Download className="w-4 h-4" />
           </button>
@@ -427,20 +598,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           <button
             onClick={handleSnipTool}
             className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors cursor-pointer"
-            title="سند ساز و صفحہ ایڈیٹر کھولیں"
+            title="سند ساز و حوالہ ایڈیٹر کھولیں"
           >
             <Scissors className="w-4 h-4" />
-          </button>
-
-          {/* Document / Unicode Chapters Mode Toggle */}
-          <button
-            onClick={() => setActiveMode(activeMode === 'text' ? 'archive-page' : 'text')}
-            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-              activeMode === 'text' ? 'bg-emerald-600 text-white' : 'hover:bg-stone-100'
-            }`}
-            title={activeMode === 'text' ? 'اصل صفحہ موڈ' : 'تحریری فصول و متن'}
-          >
-            <FileText className="w-4 h-4" />
           </button>
 
           {/* Down Chevron (Next page) */}
@@ -478,8 +638,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
         </form>
       </div>
 
-      {/* 3. MAIN CENTER READING SCREEN */}
+      {/* 3. MAIN CENTER READING SCREEN: Canvas rendering from 100% loaded document */}
       <main
+        ref={containerRef}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         className={`flex-1 overflow-auto flex justify-center items-start p-2 sm:p-4 relative ${getThemeBg()}`}
@@ -492,170 +653,99 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           </div>
         )}
 
-        {/* Active View: Scanned Book Page (Default as in screenshot) */}
-        {activeMode === 'archive-page' && (
-          <div
-            className="relative flex justify-center items-center max-w-full my-auto transition-transform duration-200"
-            style={{
-              transform: `scale(${zoomLevel / 100}) rotate(${rotation}deg)`,
-              transformOrigin: 'top center',
-            }}
-          >
-            {/* Loading Spinner */}
-            {imageLoading && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 z-20 min-h-[400px]">
-                <div className="w-8 h-8 border-3 border-emerald-600/30 border-t-emerald-600 rounded-full animate-spin mb-2"></div>
-                <span className="text-xs text-stone-500 font-sans">صفحہ لوڈ ہو رہا ہے...</span>
-              </div>
-            )}
+        {/* If Book is Still Loading 100%, show Elegant In-Reader Book Page Placeholder */}
+        {!isBookLoaded ? (
+          <div className="w-[94vw] max-w-[650px] min-h-[520px] sm:min-h-[700px] bg-white rounded-lg shadow-xl border border-stone-300 p-6 sm:p-10 flex flex-col justify-between text-stone-800 my-auto animate-in fade-in zoom-in-95 duration-200">
+            {/* Top Page Running Header (Styled like authentic Urdu Islamic book header) */}
+            <div className="border-b border-stone-300 pb-3 flex items-center justify-between text-stone-600 text-xs font-nastaliq">
+              <span>مجموعہ کتب: احتسابِ ناصبیت</span>
+              <span className="font-bold text-emerald-800">{volume.volumeTitleUrdu}</span>
+              <span>جلد {volume.volumeNumber}</span>
+            </div>
 
-            {/* Error Fallback */}
-            {imageError && (
-              <div className="text-center p-8 bg-stone-50 border border-stone-200 rounded-2xl max-w-md my-8 shadow-sm">
-                <BookOpen className="w-10 h-10 text-emerald-600 mx-auto mb-2" />
-                <h3 className="font-nastaliq text-lg font-bold text-stone-800 mb-1">
-                  صفحہ لوڈ کرنے میں تاخیر
+            {/* Center Loading Status & Live Percentage */}
+            <div className="py-8 sm:py-12 flex flex-col items-center justify-center text-center space-y-4 sm:space-y-5 my-auto">
+              <div className="relative">
+                <div className="w-20 h-20 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 shadow-inner">
+                  <BookOpen className="w-10 h-10 animate-pulse text-emerald-600" />
+                </div>
+                <div className="absolute -bottom-2 -right-2 bg-emerald-600 text-white text-[11px] font-mono font-bold px-2 py-0.5 rounded-full shadow">
+                  {loadingProgress}%
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-4xl sm:text-5xl font-mono font-black text-emerald-700 tracking-tight">
+                  {loadingProgress}%
+                </div>
+                <h3 className="font-nastaliq text-lg sm:text-xl font-bold text-stone-800">
+                  کتاب ریڈر میں لوڈ ہو رہی ہے...
                 </h3>
-                <p className="text-xs text-stone-500 font-sans mb-4">
-                  انٹرنیٹ آرکائیو سے رابطہ دوبارہ استوار کیا جا رہا ہے۔ آپ ٹیکسٹ موڈ میں بھی پڑھ سکتے ہیں۔
+                <p className="text-xs text-emerald-700 font-semibold font-sans">
+                  {loadingStatus}
                 </p>
-                <div className="flex gap-2 justify-center">
+              </div>
+
+              {/* Progress Line */}
+              <div className="w-64 sm:w-80 h-3 bg-stone-100 rounded-full border border-stone-200 overflow-hidden p-0.5 shadow-inner">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-amber-400 rounded-full transition-all duration-200"
+                  style={{ width: `${Math.max(4, loadingProgress)}%` }}
+                />
+              </div>
+
+              <p className="text-xs text-stone-500 max-w-sm leading-relaxed font-sans px-2">
+                تمام صفحات ریڈر میں یکمشت محفوظ ہو رہے ہیں تاکہ کھلنے کے بعد ورق گردانی بغیر کسی تعطل کے فوری اور رواں ہو۔
+              </p>
+
+              {loadError && (
+                <div className="w-full max-w-sm p-4 bg-rose-50 border border-rose-300 rounded-2xl text-rose-800 text-xs space-y-2 text-right">
+                  <p className="leading-relaxed">{loadError}</p>
                   <button
-                    onClick={() => {
-                      setImageLoading(true);
-                      setImageError(false);
-                    }}
-                    className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-sans cursor-pointer"
+                    onClick={() => loadEntireBook100Percent(true)}
+                    className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
                   >
-                    دوبارہ کوشش
-                  </button>
-                  <button
-                    onClick={() => setActiveMode('text')}
-                    className="px-3 py-1.5 bg-stone-200 text-stone-800 rounded-lg text-xs font-sans cursor-pointer"
-                  >
-                    تحریری فصول دیکھیں
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>دوبارہ کوشش فرمائیں</span>
                   </button>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
-            {/* Clean Book Page Image (Exact match to screenshot) */}
-            <img
-              key={`page-${archiveId}-${currentPage}`}
-              src={currentArchiveImageUrl}
-              alt={`صفحہ ${currentPage}`}
-              onLoad={() => setImageLoading(false)}
-              onError={() => {
-                setImageLoading(false);
-                setImageError(true);
-              }}
-              style={{ filter: getImageFilter() }}
-              className={`max-w-full sm:max-w-2xl md:max-w-3xl h-auto object-contain shadow-md rounded bg-white transition-opacity duration-150 ${
-                imageLoading ? 'opacity-0' : 'opacity-100'
-              }`}
-            />
-
-            {/* Freehand Notes / Canvas Overlay on top of the authentic book page */}
-            <CanvasDrawer
-              volumeId={volume.id}
-              volumeNumber={volume.volumeNumber}
-              volumeTitleUrdu={volume.volumeTitleUrdu}
-              currentPage={currentPage}
-              isDrawMode={isDrawMode}
-              onCloseDrawMode={() => setIsDrawMode(false)}
-            />
+            {/* Bottom Page Footer */}
+            <div className="border-t border-stone-300 pt-3 flex items-center justify-between text-stone-500 text-xs font-sans">
+              <span>اشاعت: دار التحقیق</span>
+              <span className="font-mono font-bold text-stone-700">صفحہ ۱</span>
+              <span>تمام اوراق محفوظ</span>
+            </div>
           </div>
-        )}
+        ) : null}
 
-        {/* Local PDF Canvas Viewer Mode */}
-        {activeMode === 'local-pdf' && (
-          <div className="w-full h-full flex flex-col">
-            <InternalPdfViewer
-              pdfUrl={volume.pdfUrl}
-              archiveItemId={volume.archiveItemId}
-              initialPage={currentPage}
-              totalExpectedPages={totalPages}
-              onPageChange={handlePageChange}
-              onSwitchToTextMode={() => setActiveMode('text')}
-              theme={theme === 'sepia' ? 'sepia' : theme === 'night' ? 'night' : 'day'}
-              volumeTitle={volume.volumeTitleUrdu}
-              volumeId={volume.id}
-              volumeNumber={volume.volumeNumber}
-              isDrawMode={isDrawMode}
-              onCloseDrawMode={() => setIsDrawMode(false)}
-            />
-          </div>
-        )}
+        {/* Clean Book Page Canvas (Matches user's screenshot page display) */}
+        <div
+          className={`relative flex justify-center items-center max-w-full my-auto transition-transform duration-200 ${
+            !isBookLoaded ? 'hidden' : ''
+          }`}
+          style={{ filter: getImageFilter() }}
+        >
+          <canvas
+            ref={canvasRef}
+            className="shadow-xl rounded bg-white transition-opacity duration-150"
+          />
 
-        {/* Transcribed Text Chapters Mode */}
-        {activeMode === 'text' && (
-          <article className="w-full max-w-3xl bg-white border border-stone-200 rounded-2xl p-6 sm:p-10 shadow-sm my-auto font-nastaliq leading-relaxed">
-            <div className="text-center pb-4 mb-6 border-b border-stone-100">
-              <div className="text-sm font-arabic text-emerald-700 mb-1">
-                بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ
-              </div>
-              <h2 className="text-2xl font-bold text-stone-900">احتساب ناصبیت</h2>
-              <p className="text-xs text-stone-500 font-sans mt-0.5">{volume.volumeTitleUrdu}</p>
-            </div>
-
-            {chapters.length > 0 && (
-              <div className="space-y-4 text-justify">
-                <div className="inline-block px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 text-xs font-bold mb-3 border border-emerald-200">
-                  {chapters[0]?.title}
-                </div>
-                {chapters[0]?.content.map((p, idx) => (
-                  <p key={idx} className="indent-4 leading-loose text-stone-800">
-                    {p}
-                  </p>
-                ))}
-              </div>
-            )}
-          </article>
-        )}
-
-        {/* Table of Contents Drawer */}
-        {showToc && (
-          <aside className="fixed inset-y-0 left-0 w-72 sm:w-80 bg-white border-r border-stone-200 p-4 shadow-2xl z-40 overflow-y-auto animate-in slide-in-from-left duration-200 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between pb-3 border-b border-stone-200 mb-3">
-                <span className="font-nastaliq text-base font-bold text-emerald-700">
-                  فہرستِ ابواب و فصول
-                </span>
-                <button
-                  onClick={() => setShowToc(false)}
-                  className="p-1 text-stone-400 hover:text-stone-900 rounded"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="space-y-1.5">
-                {chapters.map((ch, idx) => (
-                  <button
-                    key={ch.id || idx}
-                    onClick={() => {
-                      handlePageChange(ch.page || 1);
-                      setShowToc(false);
-                    }}
-                    className="w-full text-right p-2.5 rounded-xl text-xs transition-colors flex items-start justify-between gap-2 hover:bg-emerald-50 text-stone-800 cursor-pointer"
-                  >
-                    <span className="font-nastaliq">{ch.title}</span>
-                    <span className="text-[10px] bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded border border-stone-200 font-mono">
-                      ص {ch.page}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-stone-100 text-[11px] text-stone-400 text-center font-sans">
-              کل صفحات: {totalPages}
-            </div>
-          </aside>
-        )}
+          {/* Freehand Notes / Canvas Overlay */}
+          <CanvasDrawer
+            volumeId={volume.id}
+            volumeNumber={volume.volumeNumber}
+            volumeTitleUrdu={volume.volumeTitleUrdu}
+            currentPage={currentPage}
+            isDrawMode={isDrawMode}
+            onCloseDrawMode={() => setIsDrawMode(false)}
+          />
+        </div>
       </main>
 
-      {/* 4. BOTTOM PROGRESS SLIDER BAR (Matches user screenshot: full green slider + 476 / 2 on right) */}
+      {/* 4. BOTTOM PROGRESS SLIDER BAR (Matches Screenshot) */}
       <footer className="h-12 bg-white border-t border-stone-200 px-4 flex items-center justify-between gap-4 z-20 shrink-0">
         {/* Green Range Slider */}
         <div className="flex-1 flex items-center">
@@ -676,14 +766,15 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
         </div>
       </footer>
 
-      {/* Hidden local file picker */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="application/pdf,.pdf"
-        className="hidden"
-        onChange={handleLocalFileChange}
-      />
+      {/* Mobile Floating Back Button */}
+      <button
+        onClick={onClose}
+        className="sm:hidden fixed bottom-16 right-4 z-50 bg-emerald-700 text-white shadow-2xl px-3.5 py-2 rounded-full flex items-center gap-1.5 text-xs font-bold active:scale-95 cursor-pointer border border-emerald-500"
+        title="واپس جائیں"
+      >
+        <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+        <span className="font-nastaliq text-xs font-bold">واپس</span>
+      </button>
 
       {/* Dual Page Snip / Reference Editor Modal */}
       {showDualEditor && (

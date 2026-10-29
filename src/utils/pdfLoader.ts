@@ -51,9 +51,9 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
   for (let i = 0; i < sources.length; i++) {
     const targetUrl = sources[i];
     try {
-      // Use AbortController to prevent long hanging requests (timeout after 12s)
+      // Use AbortController with generous timeout for full PDF book streaming
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
 
       const response = await fetch(targetUrl, {
         method: 'GET',

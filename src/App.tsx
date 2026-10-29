@@ -14,11 +14,16 @@ import { PrivacyPolicyTab } from './components/PrivacyPolicyTab';
 import { AdminPanel } from './components/AdminPanel';
 import { RecentlyOpenedCarousel } from './components/RecentlyOpenedCarousel';
 import { ScreenEditorModal } from './components/ScreenEditorModal';
-import { BookOpen, Sparkles, Download, Check, Filter, Palette, Cloud } from 'lucide-react';
+import { ResponsesTab } from './components/ResponsesTab';
+import { BookOpen, Sparkles, Download, Check, Filter, Palette, Cloud, ArrowRight, HelpCircle } from 'lucide-react';
 import { Language, TRANSLATIONS, ENGLISH_VOLUME_DATA } from './i18n/translations';
 import { getAllDrawings } from './utils/drawingStorage';
 import { getRecentReads, recordRecentRead, RecentReadItem, RECENT_READS_EVENT } from './utils/readingHistory';
 import { fetchVolumesFromGithub } from './utils/githubSync';
+import { resolveVolumeArchiveId, resolveVolumePdfUrl } from './utils/archiveUtils';
+import { ResponseBook } from './types/book';
+import { getStoredResponseBooks, saveResponseBooks } from './utils/responseBooksStorage';
+import { triggerDirectDownload, saveBookToInternalStorage } from './utils/offlineStorage';
 
 const HIGHLIGHTS_STORAGE_KEY = 'ehtisab_highlights_v1';
 
@@ -26,6 +31,13 @@ export default function App() {
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<ActiveTab>('home');
   const [volumes, setVolumes] = useState<VolumeData[]>(DEFAULT_VOLUMES);
+  const [responseBooks, setResponseBooks] = useState<ResponseBook[]>(() => {
+    try {
+      return getStoredResponseBooks();
+    } catch {
+      return [];
+    }
+  });
   const [highlights, setHighlights] = useState<HighlightItem[]>([]);
   const [recentReads, setRecentReads] = useState<RecentReadItem[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -39,6 +51,44 @@ export default function App() {
     title: '',
   });
   const [drawingsCount, setDrawingsCount] = useState<number>(0);
+
+  // Response books CRUD
+  const handleAddResponseBook = (newBook: ResponseBook) => {
+    const updated = [newBook, ...responseBooks];
+    setResponseBooks(updated);
+    saveResponseBooks(updated);
+  };
+
+  const handleUpdateResponseBook = (updatedBook: ResponseBook) => {
+    const updated = responseBooks.map((b) => (b.id === updatedBook.id ? updatedBook : b));
+    setResponseBooks(updated);
+    saveResponseBooks(updated);
+  };
+
+  const handleDeleteResponseBook = (id: string) => {
+    const updated = responseBooks.filter((b) => b.id !== id);
+    setResponseBooks(updated);
+    saveResponseBooks(updated);
+  };
+
+  const handleReadResponseBook = (book: ResponseBook) => {
+    const vol: VolumeData = {
+      id: 9000 + Math.abs(book.id.split('').reduce((acc, char) => ((acc << 5) - acc) + char.charCodeAt(0), 0) % 1000),
+      volumeNumber: 0,
+      volumeTitleUrdu: book.titleUrdu,
+      topic: book.topic || book.author || 'ردِ اعتراضات و جوابات',
+      archiveItemId: book.archiveItemId || '',
+      coverImageUrl: book.coverImageUrl || '/app-logo.png',
+      pdfUrl: book.pdfUrl,
+      pageCount: book.pageCount || 100,
+      fileSize: book.fileSize || '15 MB',
+      description: book.description || '',
+      year: book.year,
+      lastReadPage: book.lastReadPage || 1,
+      isBookmarked: book.isBookmarked,
+    };
+    setSelectedVolumeForReading(vol);
+  };
 
   const handleOpenEditor = (volume?: VolumeData, page?: number) => {
     const target = volume || selectedVolumeForReading || volumes[0];
@@ -104,30 +154,29 @@ export default function App() {
     } catch {}
   };
 
-  // Load volumes from LocalStorage on mount
+  // Load volumes from LocalStorage on mount and upgrade any outdated placeholder URLs
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setVolumes(parsed);
+          const upgraded = parsed.map((v: VolumeData) => ({
+            ...v,
+            archiveItemId: resolveVolumeArchiveId(v.volumeNumber, v.archiveItemId),
+            pdfUrl: resolveVolumePdfUrl(v.volumeNumber, v.pdfUrl),
+          }));
+          setVolumes(upgraded);
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(upgraded));
+          } catch {}
+          return;
         }
       }
     } catch {
       // Use defaults if error
     }
-
-    // Listen for storage events (e.g. from admin.html)
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
-        try {
-          setVolumes(JSON.parse(e.newValue));
-        } catch {}
-      }
-    };
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+    setVolumes(DEFAULT_VOLUMES);
   }, []);
 
   // Background Cloud Sync with GitHub Repository
@@ -218,16 +267,16 @@ export default function App() {
     }
   };
 
-  const handleDownload = (volume: VolumeData) => {
-    // Mark as downloaded
+  const handleDownload = async (volume: VolumeData) => {
+    // 1. Mark as downloaded in app state
     const updated = volumes.map((v) =>
       v.id === volume.id ? { ...v, isDownloaded: true } : v
     );
     saveVolumesState(updated);
 
     const titleStr = lang === 'en'
-      ? `Volume ${volume.volumeNumber}: Download started...`
-      : `${volume.volumeTitleUrdu}: ڈاؤن لوڈ شروع ہو چکا ہے...`;
+      ? `Volume ${volume.volumeNumber}: Downloading directly to device...`
+      : `${volume.volumeTitleUrdu}: ڈاؤن لوڈ شروع (براہِ راست ڈیوائس پر محفوظ ہو رہی ہے)...`;
 
     // Show toast
     setDownloadToast({
@@ -236,17 +285,24 @@ export default function App() {
     });
     setTimeout(() => {
       setDownloadToast({ show: false, title: '' });
-    }, 4000);
+    }, 4500);
 
-    // Trigger download
-    const link = document.createElement('a');
-    link.href = volume.pdfUrl;
-    link.download = `Ihtisab_Nasbiyat_${volume.volumeNumber}.pdf`;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    const filename = `Ihtisab_Nasbiyat_Jild_${volume.volumeNumber}.pdf`;
+    const directApiDownloadUrl = `/api/download?url=${encodeURIComponent(volume.pdfUrl)}&filename=${encodeURIComponent(filename)}`;
+
+    // 2. Trigger direct stream download to device without opening or redirecting to Archive.org
+    triggerDirectDownload(directApiDownloadUrl, filename);
+
+    // 3. Save to internal app storage for offline folder
+    try {
+      await saveBookToInternalStorage({
+        volumeId: volume.id,
+        volumeNumber: volume.volumeNumber,
+        titleUrdu: volume.volumeTitleUrdu,
+        fileSize: volume.fileSize || '35 MB',
+        downloadedAt: new Date().toLocaleDateString('ur-PK'),
+      });
+    } catch {}
   };
 
   const saveHighlightsState = (newHighlights: HighlightItem[]) => {
@@ -364,6 +420,20 @@ export default function App() {
 
       {/* Main Content Areas */}
       <main className="flex-1">
+        {/* UNIVERSAL TOP BACK BUTTON WHEN ANY TAB/PAGE IS OPEN */}
+        {activeTab !== 'home' && (
+          <div className="max-w-5xl mx-auto px-4 pt-4 pb-2">
+            <button
+              onClick={() => setActiveTab('home')}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-stone-900/90 hover:bg-emerald-950/80 text-emerald-400 hover:text-emerald-300 border border-emerald-500/40 text-xs sm:text-sm font-bold shadow-lg cursor-pointer transition-all active:scale-95"
+              title="فہرست کتب / ہوم پیج پر واپس جائیں"
+            >
+              <ArrowRight className="w-5 h-5 text-emerald-400 stroke-[2.5]" />
+              <span className="font-nastaliq text-sm sm:text-base">فہرست کتب (ہوم پیج) پر واپس جائیں</span>
+            </button>
+          </div>
+        )}
+
         {/* HOME TAB: 12 Volumes View */}
         {activeTab === 'home' && (
           <div className="max-w-5xl mx-auto px-4 py-5 pb-24 space-y-6">
@@ -404,6 +474,52 @@ export default function App() {
                     alt="احتساب ناصبیت آفیشل لوگو"
                     className="w-full h-full object-cover rounded-xl"
                   />
+                </div>
+              </div>
+            </div>
+
+            {/* PROMINENT JALI/BOLD TAB & CARD: احتساب ناصبیت پر اعتراضات کے جوابات */}
+            <div
+              onClick={() => setActiveTab('responses')}
+              className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-amber-950 via-stone-900 to-emerald-950 border-2 border-amber-500/80 p-5 sm:p-6 shadow-2xl hover:border-amber-400 transition-all cursor-pointer group active:scale-[0.99]"
+            >
+              <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/15 rounded-full blur-3xl pointer-events-none group-hover:bg-amber-500/25 transition-all" />
+              <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
+                <div className="space-y-2.5 max-w-2xl">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/50 text-amber-300 text-xs font-bold font-sans">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                    <span>خصوصی و تحقیقی شعبہ — لامحدود کتب کا اضافہ</span>
+                  </div>
+                  <h3 className="font-nastaliq text-2xl sm:text-3xl lg:text-4xl font-extrabold text-amber-300 leading-snug drop-shadow-md">
+                    احتسابِ ناصبیت پر اعتراضات کے جوابات
+                  </h3>
+                  <p className="text-xs sm:text-sm text-stone-200 font-sans leading-relaxed">
+                    ردِ اعتراضات، تحقیقی مقالات، اور جواب الجواب کتب کا مکمل شعبہ۔ یہاں کتب کی کوئی حد (12 کتب کی پابندی) نہیں ہے؛ آپ خود بھی نئی کتب، مضامین اور رسائل کا اضافہ کر سکتے ہیں۔
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1 font-sans">
+                    <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 font-semibold">
+                      مجموعی کتب: {responseBooks.length}
+                    </span>
+                    <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-stone-800 text-amber-300 border border-amber-500/30">
+                      آن لائن مطالعہ + پی ڈی ایف ڈاؤن لوڈ
+                    </span>
+                    <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-amber-600/30 text-amber-200 border border-amber-400/40">
+                      + نئی کتاب شامل کریں
+                    </span>
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex items-center gap-2 self-stretch md:self-center justify-end w-full md:w-auto">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveTab('responses');
+                    }}
+                    className="w-full md:w-auto inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 text-stone-950 font-extrabold text-sm sm:text-base shadow-xl transition-all cursor-pointer font-nastaliq"
+                  >
+                    <span>کتب کھولیں اور نئی کتاب کا اضافہ کریں</span>
+                    <ArrowRight className="w-5 h-5 text-stone-950 stroke-[3]" />
+                  </button>
                 </div>
               </div>
             </div>
@@ -497,6 +613,18 @@ export default function App() {
               </div>
             )}
           </div>
+        )}
+
+        {/* RESPONSES TAB: Unlimited response books catalog */}
+        {activeTab === 'responses' && (
+          <ResponsesTab
+            books={responseBooks}
+            onAddBook={handleAddResponseBook}
+            onUpdateBook={handleUpdateResponseBook}
+            onDeleteBook={handleDeleteResponseBook}
+            onReadBook={handleReadResponseBook}
+            onNavigateHome={() => setActiveTab('home')}
+          />
         )}
 
         {/* SCREEN EDITOR & DUAL PAGE CITATION MAKER */}
