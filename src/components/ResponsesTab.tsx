@@ -17,12 +17,14 @@ interface ResponsesTabProps {
   onReadBook: (book: ResponseBook) => void;
   onNavigateHome: () => void;
   onToggleBookmark?: (bookId: string) => void;
+  onDownloadBook?: (book: ResponseBook) => void;
 }
 
 export const ResponsesTab: React.FC<ResponsesTabProps> = ({
   books,
   onReadBook,
   onNavigateHome,
+  onDownloadBook,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [downloadToast, setDownloadToast] = useState<string | null>(null);
@@ -41,6 +43,10 @@ export const ResponsesTab: React.FC<ResponsesTabProps> = ({
 
   const handleDownloadBook = (book: ResponseBook) => {
     if (!book.pdfUrl) return;
+    if (onDownloadBook) {
+      onDownloadBook(book);
+      return;
+    }
     const filename = `${book.titleUrdu.replace(/\s+/g, '_')}.pdf`;
     const downloadApiUrl = `/api/download?url=${encodeURIComponent(book.pdfUrl)}&filename=${encodeURIComponent(filename)}`;
     triggerDirectDownload(downloadApiUrl, filename);
@@ -176,7 +182,7 @@ export const ResponsesTab: React.FC<ResponsesTabProps> = ({
                 </div>
               </div>
 
-              {/* Action Buttons: Direct Read & Download for Public Users */}
+              {/* Action Buttons: Direct Read & Download for Readers */}
               <div className="mt-4 pt-3 border-t border-stone-800 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
                   {book.pdfUrl && (

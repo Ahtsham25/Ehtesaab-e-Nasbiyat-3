@@ -110,7 +110,57 @@ async function startServer() {
     res.json({ status: 'ok', time: new Date().toISOString() });
   });
 
-  // Fast streaming PDF proxy endpoint with Range support
+  const pdfMemoryCache = new Map<string, Buffer>();
+  const inFlightFetches = new Map<string, Promise<Buffer>>();
+
+  async function fetchAndCachePdfBuffer(targetUrl: string, rawUrl: string): Promise<Buffer> {
+    if (pdfMemoryCache.has(targetUrl)) return pdfMemoryCache.get(targetUrl)!;
+    if (pdfMemoryCache.has(rawUrl)) return pdfMemoryCache.get(rawUrl)!;
+
+    if (inFlightFetches.has(targetUrl)) {
+      return inFlightFetches.get(targetUrl)!;
+    }
+
+    const fetchPromise = (async () => {
+      try {
+        const userAgent =
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+        let res = await fetch(targetUrl, {
+          headers: { 'User-Agent': userAgent, Accept: 'application/pdf,*/*' },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(90000),
+        });
+
+        if (!res.ok && targetUrl !== rawUrl) {
+          res = await fetch(rawUrl, {
+            headers: { 'User-Agent': userAgent, Accept: 'application/pdf,*/*' },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(90000),
+          });
+        }
+
+        if (!res.ok) {
+          throw new Error(`Remote returned status ${res.status}`);
+        }
+
+        const arrayBuf = await res.arrayBuffer();
+        const buf = Buffer.from(arrayBuf);
+        if (buf.length > 50000) {
+          pdfMemoryCache.set(targetUrl, buf);
+          pdfMemoryCache.set(rawUrl, buf);
+        }
+        return buf;
+      } finally {
+        inFlightFetches.delete(targetUrl);
+      }
+    })();
+
+    inFlightFetches.set(targetUrl, fetchPromise);
+    return fetchPromise;
+  }
+
+  // Fast streaming PDF proxy endpoint with Range support and 100% memory cache
   app.get('/api/pdf-proxy', async (req, res) => {
     const rawUrl = req.query.url as string;
     if (!rawUrl) {
@@ -118,65 +168,35 @@ async function startServer() {
     }
 
     const targetUrl = await resolveArchivePdf(rawUrl);
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-    const reqHeaders: Record<string, string> = {
-      'User-Agent': userAgent,
-      'Accept': 'application/pdf,*/*',
-    };
-    if (req.headers.range) {
-      reqHeaders['Range'] = req.headers.range;
-    }
-
-    const abortController = new AbortController();
-    req.on('close', () => {
-      abortController.abort();
-    });
 
     try {
-      let response = await fetch(targetUrl, {
-        method: 'GET',
-        headers: reqHeaders,
-        redirect: 'follow',
-        signal: abortController.signal,
-      });
+      const buffer = await fetchAndCachePdfBuffer(targetUrl, rawUrl);
+      const range = req.headers.range;
 
-      // If resolved URL returned non-200 and differs from rawUrl, try rawUrl
-      if (!response.ok && targetUrl !== rawUrl && response.status !== 206) {
-        response = await fetch(rawUrl, {
-          method: 'GET',
-          headers: reqHeaders,
-          redirect: 'follow',
-          signal: abortController.signal,
-        });
-      }
-
-      if (!response.ok && response.status !== 206) {
-        return res.status(response.status).json({ error: `Remote returned status ${response.status}` });
-      }
-
-      res.status(response.status);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=604800');
 
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) res.setHeader('Content-Length', contentLength);
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10) || 0;
+        const end = parts[1] ? parseInt(parts[1], 10) : buffer.length - 1;
+        const chunk = buffer.subarray(start, end + 1);
 
-      const contentRange = response.headers.get('content-range');
-      if (contentRange) res.setHeader('Content-Range', contentRange);
-
-      if (response.body) {
-        Readable.fromWeb(response.body as any).pipe(res);
-      } else {
-        const buffer = await response.arrayBuffer();
-        res.send(Buffer.from(buffer));
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${buffer.length}`);
+        res.setHeader('Content-Length', chunk.length);
+        return res.end(chunk);
       }
+
+      res.status(200);
+      res.setHeader('Content-Length', buffer.length);
+      return res.end(buffer);
     } catch (err: any) {
-      if (err.name === 'AbortError') return;
-      console.warn('PDF Proxy error:', rawUrl, err.message);
+      console.warn('PDF Proxy error for:', rawUrl, err.message);
       if (!res.headersSent) {
-        res.status(502).json({ error: err.message || 'Failed to proxy PDF' });
+        res.status(502).json({ error: err.message || 'Failed to fetch PDF' });
       } else {
         res.end();
       }
@@ -200,43 +220,12 @@ async function startServer() {
     });
 
     try {
-      let response = await fetch(targetUrl, {
-        headers: {
-          'User-Agent': userAgent,
-          'Accept': 'application/pdf,*/*',
-        },
-        redirect: 'follow',
-        signal: abortController.signal,
-      });
-
-      if (!response.ok && targetUrl !== rawUrl) {
-        response = await fetch(rawUrl, {
-          headers: {
-            'User-Agent': userAgent,
-            'Accept': 'application/pdf,*/*',
-          },
-          redirect: 'follow',
-          signal: abortController.signal,
-        });
-      }
-
-      if (!response.ok) {
-        return res.status(response.status).json({ error: `Remote returned status ${response.status}` });
-      }
-
+      const buffer = await fetchAndCachePdfBuffer(targetUrl, rawUrl);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
       res.setHeader('Accept-Ranges', 'bytes');
-
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) res.setHeader('Content-Length', contentLength);
-
-      if (response.body) {
-        Readable.fromWeb(response.body as any).pipe(res);
-      } else {
-        const buffer = await response.arrayBuffer();
-        res.send(Buffer.from(buffer));
-      }
+      res.setHeader('Content-Length', buffer.length);
+      return res.end(buffer);
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       console.warn('Download endpoint error:', rawUrl, err.message);
@@ -295,6 +284,26 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
+
+    // Pre-cache Volume 1 and Volume 4 asynchronously into memory so reading is instant
+    setTimeout(async () => {
+      const preloadIds = [
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-1',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-4',
+        '20261003_20261003_2332',
+      ];
+      for (const id of preloadIds) {
+        try {
+          const direct = DIRECT_US_MAP[id];
+          if (direct) {
+            await fetchAndCachePdfBuffer(direct, direct);
+            console.log(`[Cache Warmup] Ready: ${id}`);
+          }
+        } catch (e: any) {
+          console.warn(`[Cache Warmup] Note: ${id} - ${e.message}`);
+        }
+      }
+    }, 1500);
   });
 }
 

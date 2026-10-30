@@ -23,7 +23,8 @@ import { fetchVolumesFromGithub } from './utils/githubSync';
 import { resolveVolumeArchiveId, resolveVolumePdfUrl } from './utils/archiveUtils';
 import { ResponseBook } from './types/book';
 import { getStoredResponseBooks, saveResponseBooks } from './utils/responseBooksStorage';
-import { triggerDirectDownload, saveBookToInternalStorage } from './utils/offlineStorage';
+import { triggerDirectDownload, saveBookToInternalStorage, getUploadedPdfBlob, deleteUploadedPdfBlob } from './utils/offlineStorage';
+import { fetchPdfArrayBuffer } from './utils/pdfLoader';
 
 const HIGHLIGHTS_STORAGE_KEY = 'ehtisab_highlights_v1';
 
@@ -65,13 +66,26 @@ export default function App() {
     saveResponseBooks(updated);
   };
 
-  const handleDeleteResponseBook = (id: string) => {
+  const handleDeleteResponseBook = async (id: string) => {
     const updated = responseBooks.filter((b) => b.id !== id);
     setResponseBooks(updated);
     saveResponseBooks(updated);
+    try {
+      await deleteUploadedPdfBlob(id);
+    } catch {}
   };
 
-  const handleReadResponseBook = (book: ResponseBook) => {
+  const handleReadResponseBook = async (book: ResponseBook) => {
+    let finalPdfUrl = book.pdfUrl;
+
+    // Check if this book has an uploaded PDF blob in IndexedDB
+    try {
+      const storedBlob = await getUploadedPdfBlob(book.id);
+      if (storedBlob && storedBlob.size > 50000) {
+        finalPdfUrl = URL.createObjectURL(storedBlob);
+      }
+    } catch {}
+
     const vol: VolumeData = {
       id: 9000 + Math.abs(book.id.split('').reduce((acc, char) => ((acc << 5) - acc) + char.charCodeAt(0), 0) % 1000),
       volumeNumber: 0,
@@ -79,7 +93,7 @@ export default function App() {
       topic: book.topic || book.author || 'ردِ اعتراضات و جوابات',
       archiveItemId: book.archiveItemId || '',
       coverImageUrl: book.coverImageUrl || '/app-logo.png',
-      pdfUrl: book.pdfUrl,
+      pdfUrl: finalPdfUrl,
       pageCount: book.pageCount || 100,
       fileSize: book.fileSize || '15 MB',
       description: book.description || '',
@@ -268,41 +282,120 @@ export default function App() {
   };
 
   const handleDownload = async (volume: VolumeData) => {
-    // 1. Mark as downloaded in app state
-    const updated = volumes.map((v) =>
-      v.id === volume.id ? { ...v, isDownloaded: true } : v
-    );
-    saveVolumesState(updated);
+    const filename = `Ihtisab_Nasbiyat_Jild_${volume.volumeNumber}.pdf`;
+    const targetUrl = resolveVolumePdfUrl(volume.volumeNumber, volume.pdfUrl);
 
-    const titleStr = lang === 'en'
-      ? `Volume ${volume.volumeNumber}: Downloading directly to device...`
-      : `${volume.volumeTitleUrdu}: ڈاؤن لوڈ شروع (براہِ راست ڈیوائس پر محفوظ ہو رہی ہے)...`;
-
-    // Show toast
     setDownloadToast({
       show: true,
-      title: titleStr,
+      title: `${volume.volumeTitleUrdu}: ایپ کے اندر محفوظ ہو رہی ہے...`,
     });
-    setTimeout(() => {
-      setDownloadToast({ show: false, title: '' });
-    }, 4500);
 
-    const filename = `Ihtisab_Nasbiyat_Jild_${volume.volumeNumber}.pdf`;
-    const directApiDownloadUrl = `/api/download?url=${encodeURIComponent(volume.pdfUrl)}&filename=${encodeURIComponent(filename)}`;
-
-    // 2. Trigger direct stream download to device without opening or redirecting to Archive.org
-    triggerDirectDownload(directApiDownloadUrl, filename);
-
-    // 3. Save to internal app storage for offline folder
     try {
+      // 1. Fetch real PDF buffer with live progress
+      const buffer = await fetchPdfArrayBuffer(targetUrl, (pct) => {
+        setDownloadToast({
+          show: true,
+          title: `${volume.volumeTitleUrdu}: ڈاؤن لوڈنگ ${pct}% (ایپ میں محفوظ ہو رہی ہے)...`,
+        });
+      });
+
+      // 2. Save full Blob in IndexedDB internal folder
+      const blob = new Blob([buffer], { type: 'application/pdf' });
       await saveBookToInternalStorage({
         volumeId: volume.id,
         volumeNumber: volume.volumeNumber,
         titleUrdu: volume.volumeTitleUrdu,
-        fileSize: volume.fileSize || '35 MB',
+        fileSize: `${(blob.size / (1024 * 1024)).toFixed(1)} MB`,
         downloadedAt: new Date().toLocaleDateString('ur-PK'),
+        blob,
       });
-    } catch {}
+
+      // 3. Mark as downloaded in app state
+      const updated = volumes.map((v) =>
+        v.id === volume.id ? { ...v, isDownloaded: true } : v
+      );
+      saveVolumesState(updated);
+
+      // 4. Save directly into device / browser downloads too
+      triggerDirectDownload(blob, filename);
+
+      setDownloadToast({
+        show: true,
+        title: `کامیابی! ${volume.volumeTitleUrdu} ایپ کے انٹرنل فولڈر اور ڈیوائس میں محفوظ ہو چکی ہے۔`,
+      });
+      setTimeout(() => {
+        setDownloadToast({ show: false, title: '' });
+      }, 4500);
+    } catch (err: any) {
+      console.warn('Failed to download book buffer, triggering direct stream fallback:', err);
+      // Fallback: trigger stream download
+      const directApiDownloadUrl = `/api/download?url=${encodeURIComponent(targetUrl)}&filename=${encodeURIComponent(filename)}`;
+      triggerDirectDownload(directApiDownloadUrl, filename);
+      setDownloadToast({
+        show: true,
+        title: `${volume.volumeTitleUrdu}: ڈاؤن لوڈ کا عمل جاری ہے...`,
+      });
+      setTimeout(() => {
+        setDownloadToast({ show: false, title: '' });
+      }, 4000);
+    }
+  };
+
+  const handleDownloadResponseBook = async (book: ResponseBook) => {
+    const filename = `${book.titleUrdu.replace(/\s+/g, '_')}.pdf`;
+    setDownloadToast({
+      show: true,
+      title: `${book.titleUrdu}: ایپ کے اندر محفوظ ہو رہی ہے...`,
+    });
+
+    try {
+      let blob: Blob | null = null;
+      if (book.pdfUrl.startsWith('uploaded:')) {
+        blob = await getUploadedPdfBlob(book.id);
+      }
+
+      if (!blob) {
+        const buffer = await fetchPdfArrayBuffer(book.pdfUrl, (pct) => {
+          setDownloadToast({
+            show: true,
+            title: `${book.titleUrdu}: ڈاؤن لوڈنگ ${pct}% (ایپ میں محفوظ ہو رہی ہے)...`,
+          });
+        });
+        blob = new Blob([buffer], { type: 'application/pdf' });
+      }
+
+      const pseudoVolId =
+        9000 +
+        Math.abs(book.id.split('').reduce((acc, char) => (acc << 5) - acc + char.charCodeAt(0), 0) % 1000);
+
+      await saveBookToInternalStorage({
+        volumeId: pseudoVolId,
+        volumeNumber: 0,
+        titleUrdu: book.titleUrdu,
+        fileSize: `${(blob.size / (1024 * 1024)).toFixed(1)} MB`,
+        downloadedAt: new Date().toLocaleDateString('ur-PK'),
+        blob,
+      });
+
+      triggerDirectDownload(blob, filename);
+
+      setDownloadToast({
+        show: true,
+        title: `کامیابی! "${book.titleUrdu}" ایپ کے اندر اور ڈیوائس میں محفوظ ہو چکی ہے۔`,
+      });
+      setTimeout(() => {
+        setDownloadToast({ show: false, title: '' });
+      }, 4500);
+    } catch (err: any) {
+      console.warn('Failed to download response book internally, fallback:', err);
+      const downloadApiUrl = `/api/download?url=${encodeURIComponent(book.pdfUrl)}&filename=${encodeURIComponent(filename)}`;
+      triggerDirectDownload(downloadApiUrl, filename);
+      setDownloadToast({
+        show: true,
+        title: `کتاب "${book.titleUrdu}" کا ڈاؤن لوڈ شروع ہو گیا ہے۔`,
+      });
+      setTimeout(() => setDownloadToast({ show: false, title: '' }), 4000);
+    }
   };
 
   const saveHighlightsState = (newHighlights: HighlightItem[]) => {
@@ -620,6 +713,7 @@ export default function App() {
           <ResponsesTab
             books={responseBooks}
             onReadBook={handleReadResponseBook}
+            onDownloadBook={handleDownloadResponseBook}
             onNavigateHome={() => setActiveTab('home')}
           />
         )}
@@ -690,6 +784,7 @@ export default function App() {
             onAddResponseBook={handleAddResponseBook}
             onUpdateResponseBook={handleUpdateResponseBook}
             onDeleteResponseBook={handleDeleteResponseBook}
+            onReadResponseBook={handleReadResponseBook}
           />
         )}
       </main>

@@ -56,9 +56,9 @@ export const INITIAL_RESPONSE_BOOKS: ResponseBook[] = [
 export function getStoredResponseBooks(): ResponseBook[] {
   try {
     const raw = localStorage.getItem(RESPONSE_BOOKS_STORAGE_KEY);
-    if (raw) {
+    if (raw !== null) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         return parsed;
       }
     }

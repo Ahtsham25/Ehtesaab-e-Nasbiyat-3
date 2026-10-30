@@ -28,7 +28,8 @@ import {
   triggerDirectDownload,
   saveSnapshotToStorage,
   saveBookToInternalStorage,
-  getBookFromInternalStorage
+  getBookFromInternalStorage,
+  getUploadedPdfBlob
 } from '../utils/offlineStorage';
 import { getDrawingForPage } from '../utils/drawingStorage';
 
@@ -133,6 +134,17 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
         setLoadingStatus('انٹرنل اسٹوریج سے کتاب کے اوراق لوڈ ہو رہے ہیں...');
         setLoadingProgress(95);
         buffer = await storedRecord.blob.arrayBuffer();
+      }
+
+      // 1b. Check if this is an admin-uploaded PDF blob
+      if (!buffer && realPdfUrl.startsWith('uploaded:')) {
+        const bookId = realPdfUrl.replace('uploaded:', '');
+        const uploadedBlob = await getUploadedPdfBlob(bookId);
+        if (uploadedBlob && uploadedBlob.size > 50000) {
+          setLoadingStatus('اپلوڈ شدہ کتاب کھولی جا رہی ہے...');
+          setLoadingProgress(95);
+          buffer = await uploadedBlob.arrayBuffer();
+        }
       }
 
       // 2. If not stored locally, download entire book 100% with live progress tracking

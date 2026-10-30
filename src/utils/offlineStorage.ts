@@ -20,8 +20,9 @@ export interface StoredBookRecord {
 }
 
 const DB_NAME = 'ehtisab_app_internal_storage';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const BOOKS_STORE = 'internal_books_folder';
+const UPLOADED_PDFS_STORE = 'uploaded_custom_pdfs';
 const SNAPSHOTS_KEY = 'ehtisab_saved_snapshots_v1';
 
 // Initialize IndexedDB
@@ -32,15 +33,64 @@ function openDb(): Promise<IDBDatabase> {
       return;
     }
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (e: any) => {
       const db = req.result;
       if (!db.objectStoreNames.contains(BOOKS_STORE)) {
         db.createObjectStore(BOOKS_STORE, { keyPath: 'volumeId' });
+      }
+      if (!db.objectStoreNames.contains(UPLOADED_PDFS_STORE)) {
+        db.createObjectStore(UPLOADED_PDFS_STORE, { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+// Save custom uploaded PDF blob to IndexedDB
+export async function saveUploadedPdfBlob(id: string, blob: Blob): Promise<void> {
+  try {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(UPLOADED_PDFS_STORE, 'readwrite');
+      const store = tx.objectStore(UPLOADED_PDFS_STORE);
+      store.put({ id, blob, updatedAt: new Date().toISOString() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('Could not save uploaded PDF:', err);
+  }
+}
+
+// Get custom uploaded PDF blob
+export async function getUploadedPdfBlob(id: string): Promise<Blob | null> {
+  try {
+    const db = await openDb();
+    return new Promise((resolve) => {
+      const tx = db.transaction(UPLOADED_PDFS_STORE, 'readonly');
+      const store = tx.objectStore(UPLOADED_PDFS_STORE);
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result ? req.result.blob : null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+// Delete custom uploaded PDF
+export async function deleteUploadedPdfBlob(id: string): Promise<void> {
+  try {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(UPLOADED_PDFS_STORE, 'readwrite');
+      const store = tx.objectStore(UPLOADED_PDFS_STORE);
+      store.delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {}
 }
 
 // Save a downloaded PDF blob to internal IndexedDB folder

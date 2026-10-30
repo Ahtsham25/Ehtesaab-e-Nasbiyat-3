@@ -28,6 +28,8 @@ import {
 import { VolumeData, ResponseBook } from '../types/book';
 import { DEFAULT_VOLUMES, STORAGE_KEY } from '../data/defaultVolumes';
 import { extractArchiveId, generateArchiveThumbnail, generateArchiveDownload } from '../utils/archiveUtils';
+import { saveUploadedPdfBlob } from '../utils/offlineStorage';
+import { loadPdfDocument, renderPageToDataUrl } from '../utils/pdfLoader';
 import {
   getGithubConfig,
   saveGithubConfig,
@@ -47,6 +49,7 @@ interface AdminPanelProps {
   onAddResponseBook?: (book: ResponseBook) => void;
   onUpdateResponseBook?: (book: ResponseBook) => void;
   onDeleteResponseBook?: (id: string) => void;
+  onReadResponseBook?: (book: ResponseBook) => void;
 }
 
 const ADMIN_AUTH_SESSION_KEY = 'ehtisab_admin_authenticated_session';
@@ -61,6 +64,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onAddResponseBook,
   onUpdateResponseBook,
   onDeleteResponseBook,
+  onReadResponseBook,
 }) => {
   const [isUnlocked, setIsUnlocked] = useState<boolean>(() => {
     try {
@@ -79,6 +83,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Response Books Management State
   const [showResponseModal, setShowResponseModal] = useState<boolean>(false);
   const [editingResponseBook, setEditingResponseBook] = useState<ResponseBook | null>(null);
+  const [uploadMode, setUploadMode] = useState<'device' | 'archive'>('device');
+  const [uploadedPdfFile, setUploadedPdfFile] = useState<File | null>(null);
+  const [isProcessingPdf, setIsProcessingPdf] = useState(false);
+  const [uploadedFileSize, setUploadedFileSize] = useState('');
   const [respTitle, setRespTitle] = useState('');
   const [respAuthor, setRespAuthor] = useState('');
   const [respTopic, setRespTopic] = useState('');
@@ -89,6 +97,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [respPages, setRespPages] = useState<number>(100);
   const [respYear, setRespYear] = useState('اشاعت ۲۰۲۶ء');
   const [respFormError, setRespFormError] = useState<string | null>(null);
+  const [bookToDelete, setBookToDelete] = useState<ResponseBook | null>(null);
 
   // Volumes Management State
   const [editableVolumes, setEditableVolumes] = useState<VolumeData[]>(volumes);
@@ -181,6 +190,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // --- Response Books Handlers ---
   const openAddResponseModal = () => {
     setEditingResponseBook(null);
+    setUploadMode('device');
+    setUploadedPdfFile(null);
+    setUploadedFileSize('');
     setRespTitle('');
     setRespAuthor('');
     setRespTopic('');
@@ -196,6 +208,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const openEditResponseModal = (book: ResponseBook) => {
     setEditingResponseBook(book);
+    setUploadMode(book.pdfUrl?.startsWith('uploaded:') ? 'device' : 'archive');
+    setUploadedPdfFile(null);
+    setUploadedFileSize(book.fileSize || '');
     setRespTitle(book.titleUrdu);
     setRespAuthor(book.author);
     setRespTopic(book.topic || '');
@@ -207,6 +222,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setRespYear(book.year || 'اشاعت ۲۰۲۶ء');
     setRespFormError(null);
     setShowResponseModal(true);
+  };
+
+  const handlePdfFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      setRespFormError('صرف پی ڈی ایف (.pdf) فائل منتخب فرمائیں۔');
+      return;
+    }
+
+    setUploadedPdfFile(file);
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+    setUploadedFileSize(`${sizeMb} MB`);
+    setRespFormError(null);
+
+    // Auto-fill title from file name if empty
+    if (!respTitle.trim()) {
+      const cleanName = file.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ');
+      setRespTitle(cleanName);
+    }
+
+    setIsProcessingPdf(true);
+    try {
+      const arr = await file.arrayBuffer();
+      const doc = await loadPdfDocument({ data: arr });
+      if (doc.numPages) {
+        setRespPages(doc.numPages);
+      }
+      try {
+        const coverData = await renderPageToDataUrl(doc, 1, 400);
+        setRespCoverUrl(coverData);
+      } catch {}
+      showToast(`فائل کامیابی سے پراسیس ہو گئی (${doc.numPages} صفحات، ${sizeMb} MB)`);
+    } catch (err: any) {
+      console.warn('Could not extract PDF page count:', err);
+    } finally {
+      setIsProcessingPdf(false);
+    }
   };
 
   const handleAutoFillResponseArchive = () => {
@@ -223,55 +277,65 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     showToast('آرکائیو سے سرورق اور ڈاؤن لوڈ لنک خودکار پر ہو گیا!');
   };
 
-  const handleSaveResponseBook = (e: React.FormEvent) => {
+  const handleSaveResponseBook = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!respTitle.trim()) {
       setRespFormError('برائے مہربانی کتاب کا نام / عنوان درج فرمائیں۔');
       return;
     }
-    if (!respPdfUrl.trim() && !respArchiveId.trim()) {
+
+    if (uploadMode === 'device' && !uploadedPdfFile && !respPdfUrl && !editingResponseBook) {
+      setRespFormError('برائے مہربانی موبائل یا کمپیوٹر سے پی ڈی ایف فائل منتخب فرمائیں۔');
+      return;
+    }
+
+    if (uploadMode === 'archive' && !respPdfUrl.trim() && !respArchiveId.trim()) {
       setRespFormError('برائے مہربانی پی ڈی ایف لنک یا آرکائیو آئی ڈی درج فرمائیں۔');
       return;
     }
 
     const cleanArchiveId = respArchiveId.trim();
-    const finalPdf = respPdfUrl.trim() || (cleanArchiveId ? generateArchiveDownload(cleanArchiveId) : '');
-    const finalCover = respCoverUrl.trim() || (cleanArchiveId ? generateArchiveThumbnail(cleanArchiveId) : '/app-logo.png');
+    const finalPdf =
+      respPdfUrl.trim() || (cleanArchiveId ? generateArchiveDownload(cleanArchiveId) : '');
+    const finalCover =
+      respCoverUrl.trim() || (cleanArchiveId ? generateArchiveThumbnail(cleanArchiveId) : '/app-logo.png');
+
+    const bookId = editingResponseBook ? editingResponseBook.id : `resp-${Date.now()}`;
+
+    // If local file was selected, save blob directly to IndexedDB
+    if (uploadedPdfFile) {
+      try {
+        await saveUploadedPdfBlob(bookId, uploadedPdfFile);
+      } catch (err) {
+        console.warn('Failed to save uploaded PDF to IndexedDB:', err);
+      }
+    }
+
+    const bookPayload: ResponseBook = {
+      id: bookId,
+      titleUrdu: respTitle.trim(),
+      author: respAuthor.trim() || 'علمائے اہل سنت و محققین',
+      topic: respTopic.trim(),
+      description: respDesc.trim(),
+      pdfUrl: uploadedPdfFile ? `uploaded:${bookId}` : finalPdf,
+      archiveItemId: cleanArchiveId,
+      coverImageUrl: finalCover,
+      pageCount: Number(respPages) || 100,
+      fileSize: uploadedFileSize || editingResponseBook?.fileSize || '15 MB',
+      year: respYear.trim(),
+      isBookmarked: editingResponseBook ? !!editingResponseBook.isBookmarked : false,
+      isUserAdded: true,
+      createdAt: editingResponseBook?.createdAt || new Date().toISOString(),
+    };
 
     if (editingResponseBook) {
       if (onUpdateResponseBook) {
-        onUpdateResponseBook({
-          ...editingResponseBook,
-          titleUrdu: respTitle.trim(),
-          author: respAuthor.trim() || 'علمائے اہل سنت و محققین',
-          topic: respTopic.trim(),
-          description: respDesc.trim(),
-          pdfUrl: finalPdf,
-          archiveItemId: cleanArchiveId,
-          coverImageUrl: finalCover,
-          pageCount: Number(respPages) || 100,
-          year: respYear.trim(),
-        });
+        onUpdateResponseBook(bookPayload);
         showToast(`کتاب "${respTitle.trim()}" کی معلومات کامیابی سے اپ ڈیٹ ہو گئیں!`);
       }
     } else {
       if (onAddResponseBook) {
-        const newBook: ResponseBook = {
-          id: `resp-${Date.now()}`,
-          titleUrdu: respTitle.trim(),
-          author: respAuthor.trim() || 'علمائے اہل سنت و محققین',
-          topic: respTopic.trim(),
-          description: respDesc.trim(),
-          pdfUrl: finalPdf,
-          archiveItemId: cleanArchiveId,
-          coverImageUrl: finalCover,
-          pageCount: Number(respPages) || 100,
-          year: respYear.trim(),
-          isBookmarked: false,
-          isUserAdded: true,
-          createdAt: new Date().toISOString(),
-        };
-        onAddResponseBook(newBook);
+        onAddResponseBook(bookPayload);
         showToast(`نئی کتاب "${respTitle.trim()}" کامیابی سے شامل ہو گئی!`);
       }
     }
@@ -279,12 +343,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const handleDeleteResponseBook = (book: ResponseBook) => {
-    if (confirm(`کیا آپ واقعی کتاب "${book.titleUrdu}" کو حذف کرنا چاہتے ہیں؟`)) {
-      if (onDeleteResponseBook) {
-        onDeleteResponseBook(book.id);
-        showToast(`کتاب "${book.titleUrdu}" کامیابی سے حذف کر دی گئی۔`);
-      }
+    setBookToDelete(book);
+  };
+
+  const handleConfirmDeleteBook = () => {
+    if (bookToDelete && onDeleteResponseBook) {
+      onDeleteResponseBook(bookToDelete.id);
+      showToast(`کتاب "${bookToDelete.titleUrdu}" کامیابی سے حذف کر دی گئی۔`);
     }
+    setBookToDelete(null);
   };
 
   // --- Volumes Handlers ---
@@ -713,21 +780,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   {/* Admin Actions Strip */}
                   <div className="mt-4 pt-3 border-t border-stone-800 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
+                      {onReadResponseBook && (
+                        <button
+                          onClick={() => onReadResponseBook(book)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-sans transition-all cursor-pointer"
+                          title="کتاب کا جائزہ لیں"
+                        >
+                          <BookOpen className="w-3.5 h-3.5" />
+                          <span>مطالعہ</span>
+                        </button>
+                      )}
+
                       <button
                         onClick={() => openEditResponseModal(book)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-sans transition-all cursor-pointer"
                         title="کتاب کی معلومات ایڈٹ کریں"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
-                        <span>ترمیم کریں</span>
+                        <span>ترمیم</span>
                       </button>
 
                       <button
                         onClick={() => handleDeleteResponseBook(book)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-sans transition-all cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-950/70 hover:bg-rose-900 text-rose-300 hover:text-rose-100 border border-rose-700/60 text-xs font-sans font-semibold transition-all cursor-pointer shadow-sm active:scale-95"
                         title="کتاب حذف کریں"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                         <span>حذف کریں</span>
                       </button>
                     </div>
@@ -831,73 +909,164 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     />
                   </div>
 
-                  {/* Archive Auto Fill Helper */}
-                  <div className="bg-stone-950/80 p-3 rounded-2xl border border-stone-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-xs font-semibold text-amber-300 font-sans">
-                        انٹرنیٹ آرکائیو آئی ڈی یا لنک (Archive.org Item ID)
-                      </label>
+                  {/* Source Selection: Device File Upload vs Archive.org Link */}
+                  <div className="space-y-3 pt-1">
+                    <label className="block text-xs font-semibold text-stone-300 font-sans">
+                      کتاب کا ذریعہ منتخب فرمائیں (اپلوڈ یا لنک) *
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2 p-1 bg-stone-950 rounded-2xl border border-stone-800">
                       <button
                         type="button"
-                        onClick={handleAutoFillResponseArchive}
-                        className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-950/60 border border-emerald-600/40 px-2.5 py-0.5 rounded-lg cursor-pointer"
+                        onClick={() => setUploadMode('device')}
+                        className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold font-sans transition-all cursor-pointer ${
+                          uploadMode === 'device'
+                            ? 'bg-emerald-600 text-white shadow-md'
+                            : 'text-stone-400 hover:text-stone-200'
+                        }`}
                       >
-                        خودکار معلومات بھریں
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>موبائل / ڈیوائس سے اپلوڈ</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setUploadMode('archive')}
+                        className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold font-sans transition-all cursor-pointer ${
+                          uploadMode === 'archive'
+                            ? 'bg-amber-600 text-stone-950 shadow-md'
+                            : 'text-stone-400 hover:text-stone-200'
+                        }`}
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>آرکائیو (Archive.org) لنک</span>
                       </button>
                     </div>
-                    <input
-                      type="text"
-                      placeholder="مثال: ehtesabe-nasbiat-by-allah-wasaya-deobandi-1"
-                      value={respArchiveId}
-                      onChange={(e) => setRespArchiveId(e.target.value)}
-                      className="w-full bg-stone-900 border border-stone-700 rounded-xl px-3 py-2 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-400"
-                    />
-                    <p className="text-[10px] text-stone-500 font-sans">
-                      آرکائیو آئی ڈی درج کر کے "خودکار معلومات بھریں" دبائیں تو کور تصویر اور پی ڈی ایف لنک خود بخود بن جائیں گے۔
-                    </p>
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
-                      پی ڈی ایف فائل کا ربط (Direct PDF URL) *
-                    </label>
-                    <input
-                      type="url"
-                      required
-                      placeholder="https://ia800903.us.archive.org/.../book.pdf"
-                      value={respPdfUrl}
-                      onChange={(e) => setRespPdfUrl(e.target.value)}
-                      className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-200 font-mono focus:outline-none focus:border-amber-400"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
-                        سرورق تصویر کا لنک (Cover Image URL)
+                  {/* OPTION 1: Direct Device File Upload */}
+                  {uploadMode === 'device' && (
+                    <div className="space-y-3 p-4 bg-stone-950/80 rounded-2xl border-2 border-dashed border-emerald-500/40 hover:border-emerald-500 transition-colors">
+                      <label className="block text-center cursor-pointer">
+                        <input
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          onChange={handlePdfFileSelected}
+                          className="hidden"
+                        />
+                        <div className="space-y-2">
+                          <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 mx-auto flex items-center justify-center">
+                            {isProcessingPdf ? (
+                              <RefreshCw className="w-6 h-6 animate-spin" />
+                            ) : (
+                              <Upload className="w-6 h-6" />
+                            )}
+                          </div>
+                          <div>
+                            <span className="text-xs sm:text-sm font-bold text-emerald-400 font-sans block">
+                              {uploadedPdfFile
+                                ? `منتخب فائل: ${uploadedPdfFile.name}`
+                                : 'موبائل یا کمپیوٹر سے پی ڈی ایف فائل منتخب کریں'}
+                            </span>
+                            <span className="text-[11px] text-stone-400 font-sans block mt-0.5">
+                              {isProcessingPdf
+                                ? 'صفحات اور سرورق کا خودکار تجزیہ جاری ہے...'
+                                : uploadedPdfFile
+                                ? `${uploadedFileSize} • ${respPages} صفحات`
+                                : 'فائل کا انتخاب کرنے پر صفحات اور کور خود بخود بن جائیں گے'}
+                            </span>
+                          </div>
+                        </div>
                       </label>
-                      <input
-                        type="url"
-                        placeholder="https://archive.org/services/img/..."
-                        value={respCoverUrl}
-                        onChange={(e) => setRespCoverUrl(e.target.value)}
-                        className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-200 font-mono focus:outline-none focus:border-amber-400"
-                      />
-                    </div>
 
-                    <div>
-                      <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
-                        کل صفحات (Page Count)
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={respPages}
-                        onChange={(e) => setRespPages(parseInt(e.target.value, 10) || 1)}
-                        className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-200 font-mono focus:outline-none focus:border-amber-400"
-                      />
+                      {/* Preview Thumbnail if generated */}
+                      {respCoverUrl && (
+                        <div className="flex items-center gap-3 pt-3 border-t border-stone-800">
+                          <img
+                            src={respCoverUrl}
+                            alt="Cover"
+                            className="w-12 h-16 object-cover rounded-lg border border-stone-700 bg-stone-900 shrink-0"
+                          />
+                          <div className="text-xs font-sans text-stone-300">
+                            <span className="text-emerald-400 font-semibold block">
+                              پہلے صفحے سے سرورق تیار ہے
+                            </span>
+                            <span className="text-[11px] text-stone-400 font-mono">
+                              کل صفحات: {respPages}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
+                  )}
+
+                  {/* OPTION 2: Archive.org Auto-fill & URL */}
+                  {uploadMode === 'archive' && (
+                    <div className="space-y-3">
+                      <div className="bg-stone-950/80 p-3 rounded-2xl border border-stone-800 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-xs font-semibold text-amber-300 font-sans">
+                            انٹرنیٹ آرکائیو آئی ڈی (Archive.org Item ID)
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handleAutoFillResponseArchive}
+                            className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-950/60 border border-emerald-600/40 px-2.5 py-0.5 rounded-lg cursor-pointer"
+                          >
+                            خودکار معلومات بھریں
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="مثال: 20261003_20261003_2332"
+                          value={respArchiveId}
+                          onChange={(e) => setRespArchiveId(e.target.value)}
+                          className="w-full bg-stone-900 border border-stone-700 rounded-xl px-3 py-2 text-xs text-amber-300 font-mono focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
+                          پی ڈی ایف فائل کا ربط (Direct PDF URL) *
+                        </label>
+                        <input
+                          type="url"
+                          placeholder="https://ia800903.us.archive.org/.../book.pdf"
+                          value={respPdfUrl}
+                          onChange={(e) => setRespPdfUrl(e.target.value)}
+                          className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-200 font-mono focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
+                            سرورق تصویر کا لنک (Cover Image URL)
+                          </label>
+                          <input
+                            type="url"
+                            placeholder="https://archive.org/services/img/..."
+                            value={respCoverUrl}
+                            onChange={(e) => setRespCoverUrl(e.target.value)}
+                            className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-200 font-mono focus:outline-none focus:border-amber-400"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
+                            کل صفحات (Page Count)
+                          </label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={respPages}
+                            onChange={(e) => setRespPages(parseInt(e.target.value, 10) || 1)}
+                            className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-200 font-mono focus:outline-none focus:border-amber-400"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
@@ -929,6 +1098,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </button>
                   </div>
                 </form>
+              </div>
+            </div>
+          )}
+
+          {/* Delete Book Confirmation Modal for Admin */}
+          {bookToDelete && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="w-full max-w-sm bg-stone-900 border-2 border-rose-500/60 rounded-3xl p-6 shadow-2xl text-center space-y-4 animate-in zoom-in-95">
+                <div className="w-14 h-14 rounded-2xl bg-rose-500/20 border border-rose-500/40 text-rose-400 mx-auto flex items-center justify-center">
+                  <Trash2 className="w-7 h-7" />
+                </div>
+
+                <div>
+                  <h3 className="font-nastaliq text-2xl font-bold text-rose-300">
+                    کیا آپ واقعی یہ کتاب حذف کرنا چاہتے ہیں؟
+                  </h3>
+                  <p className="font-nastaliq text-amber-200 text-lg mt-2 line-clamp-2">
+                    "{bookToDelete.titleUrdu}"
+                  </p>
+                  <p className="text-xs text-stone-400 font-sans mt-1">
+                    یہ کتاب "احتساب ناصبیت پر اعتراضات کے جوابات" سے ہمیشہ کے لیے ختم ہو جائے گی۔
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setBookToDelete(null)}
+                    className="flex-1 py-2.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-sans font-semibold cursor-pointer transition-colors"
+                  >
+                    منسوخ کریں
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDeleteBook}
+                    className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-sans font-bold cursor-pointer transition-colors shadow-lg shadow-rose-950"
+                  >
+                    ہاں، حذف کریں
+                  </button>
+                </div>
               </div>
             </div>
           )}

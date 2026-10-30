@@ -24,13 +24,13 @@ export function normalizePdfUrl(url: string): string {
 }
 
 /**
- * Fetch PDF as ArrayBuffer with progress tracking and automatic reliable fallbacks
+ * Fetch PDF as ArrayBuffer with progress tracking, Range-based reconnection, and automatic reliable fallbacks
  */
 export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number) => void): Promise<ArrayBuffer> {
   const cleanUrl = normalizePdfUrl(url);
 
-  // If it's a relative local URL
-  if (cleanUrl.startsWith('/') || cleanUrl.startsWith('./')) {
+  // If it's a relative local URL or blob
+  if (cleanUrl.startsWith('/') || cleanUrl.startsWith('./') || cleanUrl.startsWith('blob:')) {
     const res = await fetch(cleanUrl);
     if (!res.ok) throw new Error(`مقامی فائل نہیں مل سکی (${res.status})`);
     if (onProgress) onProgress(100);
@@ -39,96 +39,153 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
 
   // Construct sources ordered by speed and reliability
   const sources: string[] = [];
+  if (cleanUrl.startsWith('/api/pdf-proxy')) {
+    sources.push(cleanUrl);
+  } else {
+    sources.push(`/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`);
+  }
 
-  // 1. Direct proxy route via local Express server
-  sources.push(`/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`);
-
-  // 2. Direct client fetch (works great on mobile / client if CORS allowed)
-  sources.push(cleanUrl);
-
-  // 3. Fallback to ia800903 if different
-  if (cleanUrl.includes('archive.org') && !cleanUrl.includes('ia800903')) {
-    const match = cleanUrl.match(/archive\.org\/(?:download|items)\/([^\/\?#]+)(?:\/([^\?#]+))?/i);
-    if (match && match[1]) {
-      const fn = match[2] ? decodeURIComponent(match[2]) : `${match[1]}.pdf`;
-      sources.push(`/api/pdf-proxy?url=${encodeURIComponent(`https://ia800903.us.archive.org/2/items/${match[1]}/${fn}`)}`);
-    }
+  // Fallback to direct archive download if proxy is unreachable
+  if (cleanUrl.includes('archive.org')) {
+    sources.push(cleanUrl);
   }
 
   let lastError: Error | null = null;
 
   for (let i = 0; i < sources.length; i++) {
     const targetUrl = sources[i];
+
     try {
-      const controller = new AbortController();
-      // 30 seconds per attempt
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-      const response = await fetch(targetUrl, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          Accept: 'application/pdf,*/*',
-        },
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok && response.status !== 206) {
-        lastError = new Error(`سرور جواب: ${response.status} (${response.statusText})`);
-        continue;
-      }
-
-      // Verify content type isn't HTML error page
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('text/html')) {
-        lastError = new Error('پی ڈی ایف دستیاب نہیں (سرور نے ایرر پیج واپس کیا)');
-        continue;
-      }
-
-      const contentLength = response.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : 14 * 1024 * 1024;
-
-      if (!response.body) {
-        const buffer = await response.arrayBuffer();
-        if (onProgress) onProgress(100);
-        return buffer;
-      }
-
-      const reader = response.body.getReader();
       const chunks: Uint8Array[] = [];
       let received = 0;
+      let total = 15 * 1024 * 1024;
+      let resumeRetries = 0;
+      const MAX_RESUME_RETRIES = 5;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          received += value.length;
-          if (onProgress) {
-            const pct = Math.min(99, Math.max(5, Math.round((received / total) * 100)));
-            onProgress(pct);
+      while (resumeRetries <= MAX_RESUME_RETRIES) {
+        try {
+          const headers: Record<string, string> = { Accept: 'application/pdf,*/*' };
+          if (received > 0) {
+            headers['Range'] = `bytes=${received}-`;
           }
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+          const response = await fetch(targetUrl, {
+            method: 'GET',
+            headers,
+            signal: controller.signal,
+          });
+
+          clearTimeout(timeoutId);
+
+          if (!response.ok && response.status !== 206) {
+            throw new Error(`سرور جواب: ${response.status} (${response.statusText})`);
+          }
+
+          // If server returned 200 instead of 206 for range request, reset received
+          if (received > 0 && response.status === 200) {
+            chunks.length = 0;
+            received = 0;
+          }
+
+          const contentLength = response.headers.get('content-length');
+          if (contentLength) {
+            const parsedLength = parseInt(contentLength, 10);
+            if (response.status === 206) {
+              const contentRange = response.headers.get('content-range');
+              if (contentRange) {
+                const matchTotal = contentRange.match(/\/(\d+)/);
+                if (matchTotal) total = parseInt(matchTotal[1], 10);
+              } else {
+                total = received + parsedLength;
+              }
+            } else {
+              total = parsedLength;
+            }
+          }
+
+          if (!response.body) {
+            const buf = await response.arrayBuffer();
+            if (onProgress) onProgress(100);
+            return buf;
+          }
+
+          const reader = response.body.getReader();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value && value.length > 0) {
+              chunks.push(value);
+              received += value.length;
+              if (onProgress && total > 0) {
+                const pct = Math.min(99, Math.max(1, Math.round((received / total) * 100)));
+                onProgress(pct);
+              }
+            }
+          }
+
+          // Check if download completed fully
+          if (received > 50000 && (received >= total * 0.95 || !contentLength)) {
+            break;
+          }
+
+          // If connection ended before full file, retry and resume from received
+          resumeRetries++;
+          if (resumeRetries > MAX_RESUME_RETRIES) {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 1000 * resumeRetries));
+        } catch (streamErr: any) {
+          resumeRetries++;
+          lastError = streamErr;
+          if (resumeRetries > MAX_RESUME_RETRIES) {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 1200 * resumeRetries));
         }
       }
 
-      // Combine chunks into single ArrayBuffer
-      const combined = new Uint8Array(received);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
+      if (received > 50000) {
+        // Combine chunks into single ArrayBuffer
+        const combined = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+        if (onProgress) onProgress(100);
+        return combined.buffer;
       }
+    } catch (chunkErr: any) {
+      lastError = chunkErr;
+    }
 
-      if (onProgress) onProgress(100);
-      return combined.buffer;
-    } catch (err: any) {
-      lastError = err;
-      continue;
+    // Direct whole ArrayBuffer fetch fallback
+    try {
+      const response = await fetch(targetUrl, {
+        headers: { Accept: 'application/pdf,*/*' },
+      });
+      if (response.ok || response.status === 206) {
+        const buffer = await response.arrayBuffer();
+        if (buffer && buffer.byteLength > 50000) {
+          if (onProgress) onProgress(100);
+          return buffer;
+        }
+      }
+    } catch (bufErr: any) {
+      lastError = bufErr;
     }
   }
 
-  throw lastError || new Error('کتاب ڈاؤن لوڈ نہیں ہو سکی۔ برائے مہربانی انٹرنیٹ چیک فرمائیں یا دوبارہ کوشش کریں۔');
+  const friendlyMsg =
+    lastError && lastError.message?.toLowerCase().includes('fetch')
+      ? 'انٹرنیٹ کنکشن کی سست روی کی وجہ سے رابطہ تعطل کا شکار ہوا۔ براہِ کرم "دوبارہ کوشش فرمائیں" دبائیں، لوڈنگ وہیں سے بحال ہو گی۔'
+      : lastError?.message || 'کتاب لوڈ نہیں ہو سکی۔ برائے مہربانی اپنا انٹرنیٹ چیک فرمائیں یا دوبارہ کوشش کریں۔';
+
+  throw new Error(friendlyMsg);
 }
 
 /**

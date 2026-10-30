@@ -58,8 +58,12 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
     triggerDirectDownload(snap.dataUrl, `Ehtisab_Nasbiyat_Vol_${snap.volumeNumber}_Page_${snap.page}.jpg`);
   };
 
-  const downloadedVolumes = volumes.filter((v) => v.isDownloaded);
-  const pendingVolumes = volumes.filter((v) => !v.isDownloaded);
+  const isVolumeDownloaded = (vol: VolumeData) => {
+    return vol.isDownloaded || internalBooks.some((b) => b.volumeId === vol.id);
+  };
+
+  const downloadedVolumes = volumes.filter(isVolumeDownloaded);
+  const pendingVolumes = volumes.filter((v) => !isVolumeDownloaded(v));
 
   const displayedVolumes =
     filter === 'downloaded'
