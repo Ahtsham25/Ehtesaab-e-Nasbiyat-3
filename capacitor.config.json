@@ -1,0 +1,13 @@
+{
+  "appId": "com.ehtisab.nasbiyat",
+  "appName": "احتساب ناصبیت",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "webContentsDebuggingEnabled": false
+  }
+}
