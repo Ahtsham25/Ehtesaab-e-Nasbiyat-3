@@ -1,25 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Download,
   CheckCircle,
-  FileText,
   HardDrive,
   Camera,
   Trash2,
-  Eye,
-  AlertCircle,
   FolderDown,
   Sparkles,
-  ExternalLink,
-  X
+  BookOpen,
+  ArrowRight,
+  Share2,
+  X,
+  FileCheck2,
+  RefreshCw
 } from 'lucide-react';
-import { VolumeData } from '../types/book';
+import { VolumeData, ResponseBook } from '../types/book';
 import {
   getSavedSnapshots,
   deleteSnapshotFromStorage,
   SavedSnapshot,
   triggerDirectDownload,
   getInternalBooksList,
+  deleteBookFromInternalStorage,
   StoredBookRecord
 } from '../utils/offlineStorage';
 
@@ -27,22 +29,42 @@ interface DownloadsTabProps {
   volumes: VolumeData[];
   onDownload: (volume: VolumeData) => void;
   onRead: (volume: VolumeData) => void;
+  onNavigateHome?: () => void;
+  onDeleteInternalBook?: (volumeId: number) => void;
+  responseBooks?: ResponseBook[];
 }
 
 export const DownloadsTab: React.FC<DownloadsTabProps> = ({
   volumes,
   onDownload,
   onRead,
+  onNavigateHome,
+  onDeleteInternalBook,
+  responseBooks = [],
 }) => {
-  const [filter, setFilter] = useState<'all' | 'downloaded' | 'pending' | 'snapshots'>('all');
+  // Default to 'downloaded' as requested by the user
+  const [filter, setFilter] = useState<'downloaded' | 'available' | 'snapshots'>('downloaded');
   const [snapshots, setSnapshots] = useState<SavedSnapshot[]>([]);
   const [internalBooks, setInternalBooks] = useState<StoredBookRecord[]>([]);
   const [previewSnapshot, setPreviewSnapshot] = useState<SavedSnapshot | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const refreshInternalBooks = useCallback(async () => {
+    try {
+      const list = await getInternalBooksList();
+      setInternalBooks(list);
+    } catch {}
+  }, []);
 
   useEffect(() => {
     setSnapshots(getSavedSnapshots());
-    getInternalBooksList().then((list) => setInternalBooks(list));
-  }, []);
+    refreshInternalBooks();
+  }, [refreshInternalBooks]);
 
   const handleDeleteSnapshot = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -51,11 +73,13 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
     if (previewSnapshot?.id === id) {
       setPreviewSnapshot(null);
     }
+    showToast('اسکرین شاٹ حذف کر دیا گیا');
   };
 
   const handleDownloadSnapshotAgain = (snap: SavedSnapshot, e: React.MouseEvent) => {
     e.stopPropagation();
     triggerDirectDownload(snap.dataUrl, `Ehtisab_Nasbiyat_Vol_${snap.volumeNumber}_Page_${snap.page}.jpg`);
+    showToast('تصویر ڈیوائس پر محفوظ ہو گئی');
   };
 
   const isVolumeDownloaded = (vol: VolumeData) => {
@@ -65,23 +89,44 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
   const downloadedVolumes = volumes.filter(isVolumeDownloaded);
   const pendingVolumes = volumes.filter((v) => !isVolumeDownloaded(v));
 
-  const displayedVolumes =
-    filter === 'downloaded'
-      ? downloadedVolumes
-      : filter === 'pending'
-      ? pendingVolumes
-      : volumes;
+  // Handle deleting a book from app's internal offline storage
+  const handleDeleteBook = async (volId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await deleteBookFromInternalStorage(volId);
+      if (onDeleteInternalBook) {
+        onDeleteInternalBook(volId);
+      }
+      await refreshInternalBooks();
+      showToast('کتاب ایپ کے انٹرنل فولڈر سے کامیابی کے ساتھ حذف کر دی گئی');
+    } catch {
+      showToast('کتاب حذف کرنے میں دشواری پیش آئی');
+    }
+  };
 
-  const handleDownloadAll = () => {
-    volumes.forEach((vol, idx) => {
-      setTimeout(() => {
-        onDownload(vol);
-      }, idx * 800);
-    });
+  // Handle exporting/saving downloaded blob to device storage
+  const handleExportToDevice = (vol: VolumeData, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const stored = internalBooks.find((b) => b.volumeId === vol.id);
+    const filename = `Ihtisab_Nasbiyat_Jild_${vol.volumeNumber}.pdf`;
+    if (stored && stored.blob) {
+      triggerDirectDownload(stored.blob, filename);
+      showToast(`فائل "${filename}" ڈیوائس کے ڈاؤن لوڈز میں محفوظ کر دی گئی`);
+    } else {
+      onDownload(vol);
+    }
   };
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6 pb-24">
+      {/* Toast Alert */}
+      {toastMessage && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-stone-900 border border-emerald-500/50 text-emerald-300 px-5 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 text-xs font-sans font-bold animate-in fade-in slide-in-from-top-4">
+          <CheckCircle className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Downloads Header Banner */}
       <div className="bg-gradient-to-r from-emerald-950 via-stone-900 to-amber-950/70 border border-amber-900/40 rounded-3xl p-5 mb-6 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -89,88 +134,296 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
             <div className="flex items-center gap-2 mb-1">
               <FolderDown className="w-6 h-6 text-amber-400" />
               <h2 className="font-nastaliq text-2xl sm:text-3xl font-bold text-amber-300">
-                ڈاؤن لوڈ مینیجر و انٹرنل اسٹوریج
+                ایپ ڈاؤن لوڈز و انٹرنل آف لائن اسٹوریج
               </h2>
             </div>
             <p className="text-xs text-stone-300 font-sans max-w-xl leading-relaxed">
-              کتب کی پی ڈی ایف اور کیمرہ سے لیے گئے اسکرین شاٹس براہِ راست آپ کے موبائل میں ڈاؤن لوڈ ہوتے ہیں اور ایپ کے انٹرنل فولڈر میں بھی محفوظ رہتے ہیں۔
+              جو کتب آپ ایپ کے اندر ڈاؤن لوڈ کرتے ہیں، وہ یہاں محفوظ رہتی ہیں اور بغیر انٹرنیٹ کے مکمل آف لائن کھلتی ہیں۔
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          {onNavigateHome && (
             <button
-              onClick={handleDownloadAll}
-              className="flex items-center gap-2 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-stone-950 font-bold px-4 py-2.5 rounded-2xl text-xs transition-all shadow-lg cursor-pointer whitespace-nowrap font-sans"
+              onClick={onNavigateHome}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-stone-900/90 hover:bg-stone-800 text-amber-300 border border-amber-500/30 text-xs font-bold transition-all cursor-pointer font-sans shrink-0"
             >
-              <Download className="w-4 h-4" />
-              <span>تمام ۱۲ جلدیں ڈاؤن لوڈ کریں</span>
+              <span>فہرست کتب (ہوم)</span>
+              <ArrowRight className="w-4 h-4" />
             </button>
-          </div>
+          )}
         </div>
 
         {/* Stats Strip */}
         <div className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-stone-800/80 text-center">
           <div className="bg-stone-900/70 p-2.5 rounded-2xl border border-stone-800">
-            <span className="text-[11px] text-stone-400 block font-sans">کل جلدیں</span>
-            <span className="font-bold text-lg text-amber-300 font-mono">۱۲</span>
-          </div>
-          <div className="bg-stone-900/70 p-2.5 rounded-2xl border border-stone-800">
-            <span className="text-[11px] text-stone-400 block font-sans">انٹرنل محفوظ شدہ کتب</span>
+            <span className="text-[11px] text-stone-400 block font-sans">محفوظ شدہ کتب</span>
             <span className="font-bold text-lg text-emerald-400 font-mono">{downloadedVolumes.length}</span>
           </div>
           <div className="bg-stone-900/70 p-2.5 rounded-2xl border border-stone-800">
-            <span className="text-[11px] text-stone-400 block font-sans">محفوظ اسکرین شاٹس</span>
+            <span className="text-[11px] text-stone-400 block font-sans">باقی کتب</span>
+            <span className="font-bold text-lg text-amber-300 font-mono">{pendingVolumes.length}</span>
+          </div>
+          <div className="bg-stone-900/70 p-2.5 rounded-2xl border border-stone-800">
+            <span className="text-[11px] text-stone-400 block font-sans">اسکرین شاٹس</span>
             <span className="font-bold text-lg text-amber-400 font-mono">{snapshots.length}</span>
           </div>
         </div>
       </div>
 
       {/* Filter Tabs */}
-      <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1">
-        <button
-          onClick={() => setFilter('all')}
-          className={`px-3 py-1.5 rounded-xl text-xs font-sans transition-colors cursor-pointer whitespace-nowrap ${
-            filter === 'all'
-              ? 'bg-amber-600 text-stone-950 font-bold'
-              : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
-          }`}
-        >
-          تمام جلدیں ({volumes.length})
-        </button>
+      <div className="flex items-center gap-2 mb-5 overflow-x-auto pb-1">
         <button
           onClick={() => setFilter('downloaded')}
-          className={`px-3 py-1.5 rounded-xl text-xs font-sans transition-colors cursor-pointer whitespace-nowrap ${
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-sans transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
             filter === 'downloaded'
-              ? 'bg-emerald-600 text-white font-bold'
+              ? 'bg-emerald-600 text-white font-bold shadow-lg scale-[1.02]'
               : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
           }`}
         >
-          محفوظ شدہ کتب ({downloadedVolumes.length})
+          <FileCheck2 className="w-4 h-4" />
+          <span>ایپ میں ڈاؤن لوڈ شدہ کتب ({downloadedVolumes.length})</span>
         </button>
+
         <button
-          onClick={() => setFilter('pending')}
-          className={`px-3 py-1.5 rounded-xl text-xs font-sans transition-colors cursor-pointer whitespace-nowrap ${
-            filter === 'pending'
-              ? 'bg-amber-600 text-stone-950 font-bold'
+          onClick={() => setFilter('available')}
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-sans transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+            filter === 'available'
+              ? 'bg-amber-600 text-stone-950 font-bold shadow-lg scale-[1.02]'
               : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
           }`}
         >
-          ڈاؤن لوڈ کے لیے دستیاب ({pendingVolumes.length})
+          <Download className="w-4 h-4" />
+          <span>دیگر دستیاب کتب ({pendingVolumes.length})</span>
         </button>
+
         <button
           onClick={() => setFilter('snapshots')}
-          className={`px-3 py-1.5 rounded-xl text-xs font-sans transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-sans transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
             filter === 'snapshots'
-              ? 'bg-amber-500 text-stone-950 font-bold'
+              ? 'bg-amber-500 text-stone-950 font-bold shadow-lg scale-[1.02]'
               : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
           }`}
         >
-          <Camera className="w-3.5 h-3.5 text-amber-400" />
+          <Camera className="w-4 h-4" />
           <span>اسکرین شاٹس گیلری ({snapshots.length})</span>
         </button>
       </div>
 
-      {/* Snapshots Gallery View */}
+      {/* ============================================================== */}
+      {/* 1. PRIMARY VIEW: DOWNLOADED BOOKS (Strictly downloaded only!) */}
+      {/* ============================================================== */}
+      {filter === 'downloaded' && (
+        <div className="space-y-4">
+          {downloadedVolumes.length === 0 ? (
+            <div className="bg-stone-900/80 border border-stone-800 rounded-3xl p-10 sm:p-14 text-center text-stone-400 space-y-4 shadow-xl">
+              <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 mx-auto flex items-center justify-center">
+                <FolderDown className="w-8 h-8" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="font-nastaliq text-2xl sm:text-3xl font-bold text-amber-300">
+                  ابھی تک کوئی کتاب ایپ میں ڈاؤن لوڈ نہیں کی گئی
+                </h3>
+                <p className="text-xs sm:text-sm text-stone-300 font-sans max-w-md mx-auto leading-relaxed">
+                  جب آپ کسی کتاب کو ڈاؤن لوڈ کریں گے، تو وہ فائل ایپ کے انٹرنل اسٹوریج میں محفوظ ہو جائے گی اور یہاں ظاہر ہوگی، تاکہ آپ اسے انٹرنیٹ کے بغیر بھی پڑھ سکیں۔
+                </p>
+              </div>
+
+              <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
+                <button
+                  onClick={() => setFilter('available')}
+                  className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-600 via-amber-500 to-amber-400 hover:from-amber-500 hover:to-amber-300 text-stone-950 font-bold text-xs sm:text-sm shadow-xl cursor-pointer transition-all active:scale-95 font-sans"
+                >
+                  کتب کی فہرست دیکھیں اور ڈاؤن لوڈ کریں
+                </button>
+                {onNavigateHome && (
+                  <button
+                    onClick={onNavigateHome}
+                    className="px-5 py-2.5 rounded-2xl bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs sm:text-sm font-semibold transition-all cursor-pointer font-sans"
+                  >
+                    ہوم پیج پر جائیں
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4">
+              {downloadedVolumes.map((volume) => {
+                const storedInfo = internalBooks.find((b) => b.volumeId === volume.id);
+                return (
+                  <div
+                    key={volume.id}
+                    className="bg-stone-900/95 border-2 border-emerald-600/40 hover:border-emerald-500 rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all shadow-xl"
+                  >
+                    <div className="flex items-center gap-4">
+                      {/* Book Cover */}
+                      <div className="w-16 h-22 sm:w-20 sm:h-26 rounded-2xl bg-stone-950 border border-stone-700 overflow-hidden shrink-0 shadow relative">
+                        {volume.coverImageUrl ? (
+                          <img
+                            src={volume.coverImageUrl}
+                            alt={volume.volumeTitleUrdu}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center p-1 text-center font-nastaliq text-xs text-amber-300">
+                            {volume.volumeTitleUrdu}
+                          </div>
+                        )}
+                        <div className="absolute bottom-1 right-1 bg-emerald-600 text-white text-[9px] font-mono font-bold px-1 rounded">
+                          آف لائن
+                        </div>
+                      </div>
+
+                      {/* Book Details */}
+                      <div className="space-y-1">
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-600/40 text-[11px] font-bold font-sans">
+                          <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>ایپ کے انٹرنل فولڈر میں محفوظ ہے</span>
+                        </div>
+
+                        <h3 className="font-nastaliq text-xl sm:text-2xl font-bold text-amber-200">
+                          {volume.volumeTitleUrdu}: {volume.topic}
+                        </h3>
+
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-stone-400 font-sans">
+                          <span>{volume.pageCount} صفحات</span>
+                          <span>•</span>
+                          <span>سائز: {storedInfo?.fileSize || volume.fileSize}</span>
+                          {storedInfo?.downloadedAt && (
+                            <>
+                              <span>•</span>
+                              <span className="text-emerald-400">تاریخ ڈاؤن لوڈ: {storedInfo.downloadedAt}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-wrap items-center gap-2 sm:self-center">
+                      {/* Primary Offline Reader Button */}
+                      <button
+                        onClick={() => onRead(volume)}
+                        className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm shadow-xl cursor-pointer transition-all active:scale-95 font-sans"
+                      >
+                        <BookOpen className="w-4 h-4" />
+                        <span>مطالعہ فرمائیں (آف لائن)</span>
+                      </button>
+
+                      {/* Export / Save to Device Chrome */}
+                      <button
+                        onClick={(e) => handleExportToDevice(volume, e)}
+                        className="p-2.5 rounded-2xl bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-amber-300 border border-stone-700 text-xs font-semibold cursor-pointer transition-colors"
+                        title="فون اسٹوریج میں بھی محفوظ کریں"
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+
+                      {/* Delete from App Internal Storage */}
+                      <button
+                        onClick={(e) => handleDeleteBook(volume.id, e)}
+                        className="p-2.5 rounded-2xl bg-stone-800 hover:bg-rose-950/60 text-stone-400 hover:text-rose-400 border border-stone-700 hover:border-rose-500/40 text-xs cursor-pointer transition-colors"
+                        title="ایپ سے فائل حذف کریں"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* 2. SECONDARY VIEW: OTHER AVAILABLE BOOKS TO DOWNLOAD */}
+      {/* ============================================================== */}
+      {filter === 'available' && (
+        <div className="space-y-4">
+          <div className="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 flex items-center justify-between">
+            <span className="text-xs text-stone-300 font-sans">
+              جن جلدوں کو آپ ایپ میں آف لائن پڑھنا چاہتے ہیں، ان کے سامنے موجود "ڈاؤن لوڈ" بٹن دبائیں:
+            </span>
+            <span className="text-xs font-mono text-amber-400 font-bold">
+              {pendingVolumes.length} باقی کتب
+            </span>
+          </div>
+
+          {pendingVolumes.length === 0 ? (
+            <div className="bg-stone-900/80 border border-emerald-600/30 rounded-3xl p-10 text-center text-stone-300 space-y-2">
+              <CheckCircle className="w-12 h-12 text-emerald-400 mx-auto" />
+              <h4 className="font-nastaliq text-xl text-emerald-300 font-bold">
+                تمام ۱۲ جلدیں ایپ کے اندر ڈاؤن لوڈ ہو چکی ہیں!
+              </h4>
+              <p className="text-xs font-sans text-stone-400">
+                آپ بغیر انٹرنیٹ کے جب چاہیں تمام کتب کا مطالعہ فرما سکتے ہیں۔
+              </p>
+              <button
+                onClick={() => setFilter('downloaded')}
+                className="mt-3 px-5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold font-sans cursor-pointer"
+              >
+                ڈاؤن لوڈ شدہ کتب کی لسٹ دیکھیں
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3">
+              {pendingVolumes.map((volume) => (
+                <div
+                  key={volume.id}
+                  className="bg-stone-900/80 border border-stone-800 hover:border-stone-700 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-16 rounded-xl bg-stone-950 border border-stone-800 overflow-hidden shrink-0">
+                      {volume.coverImageUrl ? (
+                        <img
+                          src={volume.coverImageUrl}
+                          alt={volume.volumeTitleUrdu}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center p-1 font-nastaliq text-[10px] text-amber-300">
+                          {volume.volumeTitleUrdu}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <h4 className="font-nastaliq text-lg font-bold text-stone-200">
+                        {volume.volumeTitleUrdu}
+                      </h4>
+                      <p className="text-xs text-stone-400 font-sans mt-0.5">
+                        {volume.topic} • {volume.pageCount} صفحات • {volume.fileSize}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-center">
+                    <button
+                      onClick={() => onRead(volume)}
+                      className="px-3 py-2 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs rounded-xl transition-colors cursor-pointer font-sans"
+                    >
+                      آن لائن مطالعہ
+                    </button>
+                    <button
+                      onClick={() => onDownload(volume)}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold text-xs rounded-xl shadow transition-all cursor-pointer font-sans active:scale-95"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>ایپ میں ڈاؤن لوڈ کریں</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* 3. SNAPSHOTS GALLERY VIEW */}
+      {/* ============================================================== */}
       {filter === 'snapshots' && (
         <div className="space-y-4">
           {snapshots.length === 0 ? (
@@ -229,80 +482,6 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
         </div>
       )}
 
-      {/* Volumes List */}
-      {filter !== 'snapshots' && (
-        <div className="space-y-3">
-          {displayedVolumes.map((volume) => {
-            return (
-              <div
-                key={volume.id}
-                className="bg-stone-900/90 border border-stone-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-amber-700/40 transition-colors shadow-md"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-12 h-14 rounded-xl bg-stone-950 border border-stone-700/60 overflow-hidden flex-shrink-0 flex items-center justify-center text-center p-1">
-                    {volume.coverImageUrl ? (
-                      <img
-                        src={volume.coverImageUrl}
-                        alt={volume.volumeTitleUrdu}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          (e.target as HTMLElement).style.display = 'none';
-                        }}
-                      />
-                    ) : (
-                      <span className="font-nastaliq text-[10px] text-amber-300">
-                        {volume.volumeTitleUrdu}
-                      </span>
-                    )}
-                  </div>
-
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-nastaliq text-base font-bold text-amber-200">
-                        {volume.volumeTitleUrdu}
-                      </h3>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-stone-400 mt-1 font-sans">
-                      <span>{volume.pageCount} صفحات</span>
-                      <span>•</span>
-                      <span>سائز: {volume.fileSize}</span>
-                      <span>•</span>
-                      <span className="text-[11px] text-emerald-400">
-                        براہِ راست ڈیوائس اسٹوریج
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 self-end sm:self-center">
-                  {volume.isDownloaded && (
-                    <span className="flex items-center gap-1 text-xs text-emerald-400 bg-emerald-950/60 border border-emerald-600/40 px-2.5 py-1.5 rounded-xl font-sans">
-                      <CheckCircle className="w-3.5 h-3.5" />
-                      <span>انٹرنل محفوظ شدہ</span>
-                    </span>
-                  )}
-
-                  <button
-                    onClick={() => onRead(volume)}
-                    className="px-3.5 py-2 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs rounded-xl transition-colors cursor-pointer font-sans"
-                  >
-                    مطالعہ کریں
-                  </button>
-
-                  <button
-                    onClick={() => onDownload(volume)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold text-xs rounded-xl shadow transition-colors cursor-pointer font-sans"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>ڈاؤن لوڈ پی ڈی ایف</span>
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* Snapshot Fullscreen Preview Modal */}
       {previewSnapshot && (
         <div
@@ -322,7 +501,7 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
               </div>
               <button
                 onClick={() => setPreviewSnapshot(null)}
-                className="p-1.5 text-stone-400 hover:text-white rounded-lg"
+                className="p-1.5 text-stone-400 hover:text-white rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -356,17 +535,6 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
           </div>
         </div>
       )}
-
-      {/* Helpful Download Instructions */}
-      <div className="mt-8 p-4 bg-stone-900/50 border border-stone-800/80 rounded-2xl text-xs text-stone-400 space-y-2 font-sans">
-        <div className="flex items-center gap-1.5 text-amber-300 font-semibold">
-          <AlertCircle className="w-4 h-4" />
-          <span>براہِ راست ڈیوائس و انٹرنل اسٹوریج:</span>
-        </div>
-        <p className="leading-relaxed">
-          کتاب کی پی ڈی ایف یا کیمرہ اسکرین شاٹ ڈاؤن لوڈ کرنے پر یہ بیرونی ویب سائٹ کھولے بغیر سیدھی آپ کے ڈیوائس (Downloads / Gallery) میں محفوظ ہو جاتی ہے اور ایپ کے اندر بھی دستیاب رہتی ہے۔
-        </p>
-      </div>
     </div>
   );
 };

@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { VolumeData, ResponseBook } from '../types/book';
 import { DEFAULT_VOLUMES, STORAGE_KEY } from '../data/defaultVolumes';
-import { extractArchiveId, generateArchiveThumbnail, generateArchiveDownload } from '../utils/archiveUtils';
+import { extractArchiveId, generateArchiveThumbnail, generateArchiveDownload, fetchArchiveMetadata } from '../utils/archiveUtils';
 import { saveUploadedPdfBlob } from '../utils/offlineStorage';
 import { loadPdfDocument, renderPageToDataUrl } from '../utils/pdfLoader';
 import {
@@ -98,6 +98,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [respYear, setRespYear] = useState('اشاعت ۲۰۲۶ء');
   const [respFormError, setRespFormError] = useState<string | null>(null);
   const [bookToDelete, setBookToDelete] = useState<ResponseBook | null>(null);
+  const [quickResponseArchiveUrl, setQuickResponseArchiveUrl] = useState('');
+  const [isQuickFetchingResponse, setIsQuickFetchingResponse] = useState(false);
+  const [isModalFetchingArchive, setIsModalFetchingArchive] = useState(false);
 
   // Volumes Management State
   const [editableVolumes, setEditableVolumes] = useState<VolumeData[]>(volumes);
@@ -263,18 +266,89 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const handleAutoFillResponseArchive = () => {
+  const handleQuickAutoFetchResponseBook = async () => {
+    const raw = quickResponseArchiveUrl.trim();
+    if (!raw) {
+      showToast('برائے مہربانی Archive.org کا لنک یا آئٹم آئی ڈی درج فرمائیں۔', true);
+      return;
+    }
+    const cleanId = extractArchiveId(raw);
+    if (!cleanId) {
+      showToast('درست Archive.org لنک یا آئی ڈی نہیں مل سکی۔', true);
+      return;
+    }
+    setIsQuickFetchingResponse(true);
+    try {
+      const meta = await fetchArchiveMetadata(cleanId);
+      if (!meta) {
+        showToast('آرکائیو سے معلومات حاصل نہ ہو سکیں۔', true);
+        return;
+      }
+      const bookId = `resp-${Date.now()}`;
+      const newBook: ResponseBook = {
+        id: bookId,
+        titleUrdu: meta.title || cleanId.replace(/[_-]+/g, ' '),
+        author: meta.author || 'علمائے اہل سنت و محققین',
+        topic: meta.topic || 'ردِ اعتراضات و مدلل جوابات',
+        description: meta.description || '',
+        archiveItemId: meta.archiveId,
+        pdfUrl: meta.pdfUrl,
+        coverImageUrl: meta.coverImageUrl,
+        pageCount: meta.pageCount || 100,
+        fileSize: meta.fileSize || '15 MB',
+        year: meta.year || 'اشاعت ۲۰۲۶ء',
+        isBookmarked: false,
+        isUserAdded: true,
+        createdAt: new Date().toISOString(),
+      };
+      if (onAddResponseBook) {
+        onAddResponseBook(newBook);
+        showToast(`✓ کتاب "${newBook.titleUrdu}" آرکائیو سے خودکار حاصل ہو کر شامل ہو گئی!`);
+        setQuickResponseArchiveUrl('');
+      }
+    } catch (err: any) {
+      showToast(`آٹو فیچ میں خرابی: ${err.message}`, true);
+    } finally {
+      setIsQuickFetchingResponse(false);
+    }
+  };
+
+  const handleAutoFillResponseArchive = async () => {
     const raw = respArchiveId.trim() || respPdfUrl.trim();
     const id = extractArchiveId(raw);
     if (!id) {
       setRespFormError('برائے مہربانی درست Archive.org URL یا آئٹم آئی ڈی درج فرمائیں۔');
       return;
     }
-    setRespArchiveId(id);
-    setRespCoverUrl(generateArchiveThumbnail(id));
-    setRespPdfUrl(generateArchiveDownload(id));
+    setIsModalFetchingArchive(true);
     setRespFormError(null);
-    showToast('آرکائیو سے سرورق اور ڈاؤن لوڈ لنک خودکار پر ہو گیا!');
+    try {
+      const meta = await fetchArchiveMetadata(id);
+      if (meta) {
+        setRespArchiveId(meta.archiveId);
+        setRespTitle(meta.title);
+        setRespAuthor(meta.author);
+        setRespYear(meta.year);
+        setRespTopic(meta.topic);
+        if (meta.description) setRespDesc(meta.description);
+        setRespCoverUrl(meta.coverImageUrl);
+        setRespPdfUrl(meta.pdfUrl);
+        setRespPages(meta.pageCount);
+        setUploadedFileSize(meta.fileSize);
+        showToast('آرکائیو سے تمام معلومات اور سرورق خودکار پر ہو گیا!');
+      } else {
+        setRespArchiveId(id);
+        setRespCoverUrl(generateArchiveThumbnail(id));
+        setRespPdfUrl(generateArchiveDownload(id));
+        showToast('آرکائیو سے سرورق اور ڈاؤن لوڈ لنک پر ہو گیا!');
+      }
+    } catch {
+      setRespArchiveId(id);
+      setRespCoverUrl(generateArchiveThumbnail(id));
+      setRespPdfUrl(generateArchiveDownload(id));
+    } finally {
+      setIsModalFetchingArchive(false);
+    }
   };
 
   const handleSaveResponseBook = async (e: React.FormEvent) => {
@@ -712,6 +786,47 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </button>
           </div>
 
+          {/* 1-Click Quick Auto-Fetch Bar for Response Books */}
+          <div className="bg-stone-900/90 border border-amber-500/40 rounded-3xl p-4 sm:p-5 shadow-xl space-y-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <h4 className="font-nastaliq text-lg sm:text-xl font-bold text-amber-300">
+                آرکائیو (Archive.org) سے خودکار حاصل کر کے شامل کریں (1-کلک آٹو فیچ)
+              </h4>
+            </div>
+            <p className="text-xs text-stone-300 font-sans leading-relaxed">
+              انٹرنیٹ آرکائیو کا کوئی بھی لنک یا آئٹم آئی ڈی یہاں چسپاں کریں، ایپ خودکار طور پر کتاب کا اصل عنوان، مصنف، صفحات، سرورق (Cover Image) اور پی ڈی ایف لنک حاصل کر کے لسٹ میں شامل کر دے گی:
+            </p>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+              <input
+                type="text"
+                dir="ltr"
+                value={quickResponseArchiveUrl}
+                onChange={(e) => setQuickResponseArchiveUrl(e.target.value)}
+                placeholder="مثلاً: https://archive.org/details/20261003_20261003_2332 یا 20261003_20261003_2332"
+                className="flex-1 bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-2xl px-4 py-2.5 text-xs sm:text-sm text-stone-100 placeholder-stone-500 focus:outline-none font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleQuickAutoFetchResponseBook}
+                disabled={isQuickFetchingResponse || !quickResponseArchiveUrl.trim()}
+                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 disabled:opacity-50 text-stone-950 font-bold text-xs sm:text-sm shadow-xl cursor-pointer transition-all active:scale-95 shrink-0 font-sans"
+              >
+                {isQuickFetchingResponse ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>آٹو فیچ ہو رہا ہے...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4" />
+                    <span>خودکار حاصل کر کے شامل کریں</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
           {/* List of Existing Response Books */}
           {responseBooks.length === 0 ? (
             <div className="bg-stone-900/60 border border-stone-800 rounded-3xl p-10 text-center text-stone-400">
@@ -1011,9 +1126,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <button
                             type="button"
                             onClick={handleAutoFillResponseArchive}
-                            className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-950/60 border border-emerald-600/40 px-2.5 py-0.5 rounded-lg cursor-pointer"
+                            disabled={isModalFetchingArchive}
+                            className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-950/60 border border-emerald-600/40 px-2.5 py-1 rounded-lg cursor-pointer disabled:opacity-50"
                           >
-                            خودکار معلومات بھریں
+                            {isModalFetchingArchive ? (
+                              <>
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                                <span>حاصل ہو رہا ہے...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-3 h-3" />
+                                <span>خودکار معلومات و سرورق بھریں</span>
+                              </>
+                            )}
                           </button>
                         </div>
                         <input

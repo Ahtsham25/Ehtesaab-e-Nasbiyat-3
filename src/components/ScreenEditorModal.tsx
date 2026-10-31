@@ -5,33 +5,30 @@ import {
   Square,
   Minus,
   Type,
-  Move,
-  Check,
   RotateCcw,
   RotateCw,
-  MoreVertical,
   Download,
   Trash2,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
   ChevronRight,
   ChevronLeft,
   ArrowRight,
   Plus,
-  Palette,
   BookOpen,
   ArrowUp,
   ArrowDown,
   ArrowLeft,
-  Loader2
+  Loader2,
+  Check,
+  Edit3,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  Bold,
+  Sliders
 } from 'lucide-react';
 import { VolumeData } from '../types/book';
 import { DEFAULT_VOLUMES } from '../data/defaultVolumes';
-import {
-  resolveVolumeArchiveId,
-  resolveVolumePdfUrl,
-} from '../utils/archiveUtils';
+import { resolveVolumeArchiveId, resolveVolumePdfUrl } from '../utils/archiveUtils';
 import { loadPdfDocument, renderPageToDataUrl } from '../utils/pdfLoader';
 
 interface ScreenEditorModalProps {
@@ -62,12 +59,15 @@ interface StrokeAnnotation {
 export interface DraggableText {
   id: string;
   text: string;
-  x: number; // in pixels relative to 680px sheet
-  y: number;
+  x: number; // left in pixels relative to 680px sheet
+  y: number; // top in pixels relative to 680px sheet
+  width: number; // resizable width in pixels
+  height: number; // resizable height in pixels
   fontSize: number;
   color: string;
-  bgColor: string; // 'transparent', '#000000bb', '#ffffffdd', '#f59e0b', '#065f46'
+  bgColor: string; // 'transparent', '#ffffffdd', '#000000bb', '#fef3c7dd', '#065f46dd'
   isBold: boolean;
+  textAlign: 'center' | 'right' | 'left';
 }
 
 const SHEET_WIDTH = 680;
@@ -108,54 +108,64 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   // Cached active PDF document proxy
   const docProxyRef = useRef<any>(pdfDoc || null);
 
-  // Active Tool: 'highlight' | 'box' | 'line' | 'text' | 'move'
-  const [activeTool, setActiveTool] = useState<'highlight' | 'box' | 'line' | 'text' | 'move'>('text');
+  // Active Tool: 'highlight' | 'box' | 'line' | 'text'
+  const [activeTool, setActiveTool] = useState<'highlight' | 'box' | 'line' | 'text'>('text');
   const [selectedColor, setSelectedColor] = useState<string>('#ffeb3b');
-  const [intensity, setIntensity] = useState<number>(85); // 20 - 100%
-  const [topSpaceOption, setTopSpaceOption] = useState<'0' | '10' | '20' | '30'>('10');
-  const [customCitationTitle, setCustomCitationTitle] = useState<string>('');
-  const [zoomPercent, setZoomPercent] = useState<number>(100);
+
+  // Dedicated Highlighter Opacity & Thickness Controls
+  const [highlighterOpacity, setHighlighterOpacity] = useState<number>(40); // 10% - 100%
+  const [highlighterWidth, setHighlighterWidth] = useState<number>(24); // 12, 24, 36
+
+  // Canvas Top Space (for custom text headers)
+  const [topSpacePx, setTopSpacePx] = useState<number>(55); // 15, 55, 90, 130
+  const bottomSpacePx = 20;
+  const totalSheetHeight = PAGE_HEIGHT + topSpacePx + bottomSpacePx;
 
   // Viewport container measurement for responsive auto-fitting
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({
-    width: 360,
-    height: 480,
+    width: 800,
+    height: 600,
   });
 
-  // Annotations
+  // Free-form drawings
   const [strokes, setStrokes] = useState<StrokeAnnotation[]>([]);
   const [redoStrokes, setRedoStrokes] = useState<StrokeAnnotation[]>([]);
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [activeStroke, setActiveStroke] = useState<StrokeAnnotation | null>(null);
 
-  // Draggable Texts (Requirement 2: freely movable text boxes)
+  // Stretchable & Draggable Text Elements
   const [textList, setTextList] = useState<DraggableText[]>([
     {
-      id: 'txt-default-title',
-      text: `کتاب "احتسابِ ناصبیت" - جلد ${initialVolume?.volumeNumber || 1}`,
-      x: 340,
-      y: 28,
+      id: 'txt-main-title',
+      text: `کتاب "احتسابِ ناصبیت" — جلد ${initialVolume?.volumeNumber || 1} (ص ${initialPage || 1})`,
+      x: 40,
+      y: 10,
+      width: 600,
+      height: 42,
       fontSize: 16,
       color: '#065f46',
-      bgColor: 'transparent',
+      bgColor: '#ffffffdd',
       isBold: true,
+      textAlign: 'center',
     },
-    {
-      id: 'txt-default-page',
-      text: `صفحہ نمبر: ${initialPage || 1}`,
-      x: 520,
-      y: 470,
-      fontSize: 13,
-      color: '#1f2937',
-      bgColor: '#f3f4f6dd',
-      isBold: true,
-    }
   ]);
-  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
-  const [newTextInput, setNewTextInput] = useState<string>('');
-  const [showAddTextModal, setShowAddTextModal] = useState<boolean>(false);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>('txt-main-title');
+  const [editingTextItem, setEditingTextItem] = useState<DraggableText | null>(null);
+  const [editTextValue, setEditTextValue] = useState<string>('');
+
+  // Dragging and Stretching (Resizing) State
   const [isDraggingText, setIsDraggingText] = useState<boolean>(false);
   const [dragOffset, setDragOffset] = useState<Point>({ x: 0, y: 0 });
+  const [resizingTextId, setResizingTextId] = useState<string | null>(null);
+  const [resizeHandle, setResizeHandle] = useState<'e' | 'w' | 's' | 'se' | 'sw' | null>(null);
+  const [resizeStart, setResizeStart] = useState<{
+    startX: number;
+    startY: number;
+    initW: number;
+    initH: number;
+    initX: number;
+    initY: number;
+  }>({ startX: 0, startY: 0, initW: 0, initH: 0, initX: 0, initY: 0 });
 
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [showVolumePicker, setShowVolumePicker] = useState<boolean>(false);
@@ -172,12 +182,6 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   const archiveId = resolveVolumeArchiveId(activeVolume.volumeNumber, activeVolume.archiveItemId);
   const rawCoverUrl = activeVolume.coverImageUrl || `https://archive.org/services/img/${archiveId}`;
   const proxiedCoverUrl = `/api/image-proxy?url=${encodeURIComponent(rawCoverUrl)}`;
-
-  // Top space and total sheet height calculations
-  const topSpacePx =
-    topSpaceOption === '0' ? 24 : topSpaceOption === '10' ? 55 : topSpaceOption === '20' ? 85 : 120;
-  const bottomSpacePx = 48;
-  const totalSheetHeight = PAGE_HEIGHT + topSpacePx + bottomSpacePx;
 
   // Render Target Reading Page
   useEffect(() => {
@@ -203,7 +207,6 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     }
 
     async function renderPage() {
-      // If we already have the exact pre-rendered snapshot from the reader
       if (initialPageImage && activeVolume.id === initialVolume?.id && currentPage === initialPage) {
         setRefPageImage(initialPageImage);
         setIsRenderingRefPage(false);
@@ -235,7 +238,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     };
   }, [activeVolume, currentPage, initialPageImage, initialPage, initialVolume, pdfDoc]);
 
-  // Render Title Page (Page 1) when title_page mode is requested
+  // Render Title Page (Page 1) when requested
   useEffect(() => {
     let isCancelled = false;
     if (coverMode === 'title_page' && !titlePageImage) {
@@ -283,44 +286,12 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // Compute scale so sheet is 100% fitted in the viewport without cropping
-  const availW = Math.max(200, viewportSize.width - 24);
-  const availH = Math.max(200, viewportSize.height - 24);
+  const availW = Math.max(200, viewportSize.width - 20);
+  const availH = Math.max(200, viewportSize.height - 20);
   const autoFitScale = Math.min(availW / SHEET_WIDTH, availH / totalSheetHeight, 1);
-  const effectiveScale = autoFitScale * (zoomPercent / 100);
+  const effectiveScale = autoFitScale;
 
-  // Sync initial volume
-  useEffect(() => {
-    if (initialVolume) {
-      setActiveVolume(initialVolume);
-    }
-    if (initialPage) {
-      setCurrentPage(initialPage);
-    }
-  }, [initialVolume, initialPage]);
-
-  // Update default text when volume or page changes
-  useEffect(() => {
-    setTextList((prev) =>
-      prev.map((item) => {
-        if (item.id === 'txt-default-title') {
-          return {
-            ...item,
-            text: customCitationTitle || `کتاب "احتسابِ ناصبیت" - ${activeVolume.volumeTitleUrdu}`,
-          };
-        }
-        if (item.id === 'txt-default-page') {
-          return {
-            ...item,
-            text: `صفحہ: ${currentPage} / ${activeVolume.pageCount || 476}`,
-          };
-        }
-        return item;
-      })
-    );
-  }, [activeVolume, currentPage, customCitationTitle]);
-
-  // Canvas Drawing & Re-draw logic
+  // Redraw Canvas
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -338,7 +309,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
       ctx.fillStyle = s.color;
 
       if (s.tool === 'highlight' && s.points && s.points.length > 0) {
-        ctx.lineWidth = s.width || 22;
+        ctx.lineWidth = s.width || 24;
         ctx.lineCap = 'square';
         ctx.lineJoin = 'round';
         ctx.beginPath();
@@ -360,13 +331,13 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
       } else if (s.tool === 'box' && s.boxRect) {
         ctx.lineWidth = s.width || 3;
         ctx.strokeRect(s.boxRect.x, s.boxRect.y, s.boxRect.w, s.boxRect.h);
-        ctx.globalAlpha = alpha * 0.18;
+        ctx.globalAlpha = alpha * 0.15;
         ctx.fillRect(s.boxRect.x, s.boxRect.y, s.boxRect.w, s.boxRect.h);
       }
       ctx.restore();
     });
 
-    // Draw active stroke in progress
+    // Draw active stroke
     if (activeStroke) {
       ctx.save();
       const alpha = activeStroke.opacity / 100;
@@ -375,7 +346,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
       ctx.fillStyle = activeStroke.color;
 
       if (activeStroke.tool === 'highlight' && activeStroke.points) {
-        ctx.lineWidth = activeStroke.width || 22;
+        ctx.lineWidth = activeStroke.width || 24;
         ctx.lineCap = 'square';
         ctx.lineJoin = 'round';
         ctx.beginPath();
@@ -396,19 +367,9 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         ctx.stroke();
       } else if (activeStroke.tool === 'box' && activeStroke.boxRect) {
         ctx.lineWidth = activeStroke.width || 3;
-        ctx.strokeRect(
-          activeStroke.boxRect.x,
-          activeStroke.boxRect.y,
-          activeStroke.boxRect.w,
-          activeStroke.boxRect.h
-        );
-        ctx.globalAlpha = alpha * 0.18;
-        ctx.fillRect(
-          activeStroke.boxRect.x,
-          activeStroke.boxRect.y,
-          activeStroke.boxRect.w,
-          activeStroke.boxRect.h
-        );
+        ctx.strokeRect(activeStroke.boxRect.x, activeStroke.boxRect.y, activeStroke.boxRect.w, activeStroke.boxRect.h);
+        ctx.globalAlpha = alpha * 0.15;
+        ctx.fillRect(activeStroke.boxRect.x, activeStroke.boxRect.y, activeStroke.boxRect.w, activeStroke.boxRect.h);
       }
       ctx.restore();
     }
@@ -419,7 +380,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   }, [redrawCanvas]);
 
   // Coordinate mapper from screen to 680px sheet space
-  const getCanvasCoords = (e: React.MouseEvent | React.TouchEvent): Point => {
+  const getSheetCoords = (e: React.MouseEvent | React.TouchEvent): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
@@ -435,22 +396,31 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     };
   };
 
-  // Pointer event handlers for drawing tools
+  // Drawing event handlers
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
-    if (activeTool === 'move' || activeTool === 'text') return;
-    const pt = getCanvasCoords(e);
+    if (activeTool === 'text') return;
+    const pt = getSheetCoords(e);
 
     setIsDrawing(true);
     setRedoStrokes([]);
 
-    if (activeTool === 'highlight' || activeTool === 'line') {
+    if (activeTool === 'highlight') {
       setActiveStroke({
         id: `stroke-${Date.now()}`,
-        tool: activeTool,
+        tool: 'highlight',
         points: [pt],
         color: selectedColor,
-        opacity: intensity,
-        width: activeTool === 'highlight' ? 22 : 4,
+        opacity: highlighterOpacity,
+        width: highlighterWidth,
+      });
+    } else if (activeTool === 'line') {
+      setActiveStroke({
+        id: `stroke-${Date.now()}`,
+        tool: 'line',
+        points: [pt],
+        color: selectedColor,
+        opacity: 100,
+        width: 3,
       });
     } else if (activeTool === 'box') {
       setActiveStroke({
@@ -458,7 +428,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         tool: 'box',
         boxRect: { x: pt.x, y: pt.y, w: 0, h: 0 },
         color: selectedColor,
-        opacity: intensity,
+        opacity: 100,
         width: 3,
       });
     }
@@ -466,7 +436,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing || !activeStroke) return;
-    const pt = getCanvasCoords(e);
+    const pt = getSheetCoords(e);
 
     if (activeStroke.tool === 'highlight' || activeStroke.tool === 'line') {
       setActiveStroke((prev) =>
@@ -489,77 +459,107 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     }
   };
 
-  // Draggable text mouse/touch handlers
+  // Text Box Move & Stretch Handlers
   const handleTextMouseDown = (id: string, e: React.MouseEvent | React.TouchEvent) => {
     e.stopPropagation();
     setSelectedTextId(id);
     setIsDraggingText(true);
 
-    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-
+    const pt = getSheetCoords(e);
     const item = textList.find((t) => t.id === id);
-    if (item && canvasRef.current) {
-      const rect = canvasRef.current.getBoundingClientRect();
-      const scaleX = SHEET_WIDTH / rect.width;
-      const scaleY = totalSheetHeight / rect.height;
-      const currentCanvasX = (clientX - rect.left) * scaleX;
-      const currentCanvasY = (clientY - rect.top) * scaleY;
+    if (item) {
       setDragOffset({
-        x: currentCanvasX - item.x,
-        y: currentCanvasY - item.y,
+        x: pt.x - item.x,
+        y: pt.y - item.y,
+      });
+    }
+  };
+
+  const handleResizeStart = (
+    id: string,
+    handle: 'e' | 'w' | 's' | 'se' | 'sw',
+    e: React.MouseEvent | React.TouchEvent
+  ) => {
+    e.stopPropagation();
+    setSelectedTextId(id);
+    setResizingTextId(id);
+    setResizeHandle(handle);
+
+    const pt = getSheetCoords(e);
+    const item = textList.find((t) => t.id === id);
+    if (item) {
+      setResizeStart({
+        startX: pt.x,
+        startY: pt.y,
+        initW: item.width,
+        initH: item.height,
+        initX: item.x,
+        initY: item.y,
       });
     }
   };
 
   const handleSheetPointerMove = (e: React.MouseEvent | React.TouchEvent) => {
-    if (isDraggingText && selectedTextId) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-      const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    const pt = getSheetCoords(e);
 
-      const scaleX = SHEET_WIDTH / rect.width;
-      const scaleY = totalSheetHeight / rect.height;
-      const canvasX = (clientX - rect.left) * scaleX;
-      const canvasY = (clientY - rect.top) * scaleY;
-
-      const newX = Math.round(canvasX - dragOffset.x);
-      const newY = Math.round(canvasY - dragOffset.y);
+    // 1. Moving text box
+    if (isDraggingText && selectedTextId && !resizingTextId) {
+      const newX = Math.round(pt.x - dragOffset.x);
+      const newY = Math.round(pt.y - dragOffset.y);
 
       setTextList((prev) =>
         prev.map((t) =>
           t.id === selectedTextId
-            ? { ...t, x: Math.max(10, Math.min(SHEET_WIDTH - 20, newX)), y: Math.max(10, Math.min(totalSheetHeight - 10, newY)) }
+            ? {
+                ...t,
+                x: Math.max(0, Math.min(SHEET_WIDTH - t.width, newX)),
+                y: Math.max(0, Math.min(totalSheetHeight - t.height, newY)),
+              }
             : t
         )
+      );
+    }
+
+    // 2. Stretching / Resizing text box freely
+    if (resizingTextId && resizeHandle) {
+      const deltaX = pt.x - resizeStart.startX;
+      const deltaY = pt.y - resizeStart.startY;
+
+      setTextList((prev) =>
+        prev.map((t) => {
+          if (t.id !== resizingTextId) return t;
+
+          let newW = t.width;
+          let newH = t.height;
+          let newX = t.x;
+
+          if (resizeHandle === 'e' || resizeHandle === 'se') {
+            newW = Math.max(80, Math.min(SHEET_WIDTH - t.x, resizeStart.initW + deltaX));
+          }
+          if (resizeHandle === 'w' || resizeHandle === 'sw') {
+            const potentialW = resizeStart.initW - deltaX;
+            if (potentialW >= 80) {
+              newW = Math.min(SHEET_WIDTH, potentialW);
+              newX = resizeStart.initX + deltaX;
+            }
+          }
+          if (resizeHandle === 's' || resizeHandle === 'se' || resizeHandle === 'sw') {
+            newH = Math.max(30, Math.min(totalSheetHeight - t.y, resizeStart.initH + deltaY));
+          }
+
+          return { ...t, width: Math.round(newW), height: Math.round(newH), x: Math.round(newX) };
+        })
       );
     }
   };
 
   const handleSheetPointerUp = () => {
-    if (isDraggingText) {
-      setIsDraggingText(false);
-    }
+    setIsDraggingText(false);
+    setResizingTextId(null);
+    setResizeHandle(null);
   };
 
-  // Nudge selected text with directional buttons
-  const nudgeText = (dx: number, dy: number) => {
-    if (!selectedTextId) return;
-    setTextList((prev) =>
-      prev.map((t) =>
-        t.id === selectedTextId
-          ? {
-              ...t,
-              x: Math.max(10, Math.min(SHEET_WIDTH - 20, t.x + dx)),
-              y: Math.max(10, Math.min(totalSheetHeight - 10, t.y + dy)),
-            }
-          : t
-      )
-    );
-  };
-
+  // Text modification functions
   const updateSelectedTextFontSize = (delta: number) => {
     if (!selectedTextId) return;
     setTextList((prev) =>
@@ -583,6 +583,20 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     );
   };
 
+  const toggleSelectedTextBold = () => {
+    if (!selectedTextId) return;
+    setTextList((prev) =>
+      prev.map((t) => (t.id === selectedTextId ? { ...t, isBold: !t.isBold } : t))
+    );
+  };
+
+  const updateSelectedTextAlign = (align: 'center' | 'right' | 'left') => {
+    if (!selectedTextId) return;
+    setTextList((prev) =>
+      prev.map((t) => (t.id === selectedTextId ? { ...t, textAlign: align } : t))
+    );
+  };
+
   const deleteSelectedText = () => {
     if (!selectedTextId) return;
     setTextList((prev) => prev.filter((t) => t.id !== selectedTextId));
@@ -590,26 +604,35 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     showToast('تحریر حذف کر دی گئی');
   };
 
-  const handleAddNewTextSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTextInput.trim()) return;
-
+  const handleAddNewText = () => {
     const newId = `txt-${Date.now()}`;
     const newText: DraggableText = {
       id: newId,
-      text: newTextInput.trim(),
-      x: 340,
-      y: topSpacePx > 20 ? 30 : 60,
+      text: 'یہاں اپنی تحریر، حوالہ یا سند درج فرمائیں',
+      x: 100,
+      y: Math.max(10, topSpacePx - 30),
+      width: 480,
+      height: 44,
       fontSize: 16,
-      color: selectedColor === '#ffeb3b' ? '#065f46' : selectedColor,
+      color: '#065f46',
       bgColor: '#ffffffdd',
       isBold: true,
+      textAlign: 'center',
     };
     setTextList((prev) => [...prev, newText]);
     setSelectedTextId(newId);
-    setNewTextInput('');
-    setShowAddTextModal(false);
-    showToast('نئی تحریر شامل ہو گئی! آپ اسے انگلی سے کہیں بھی لے جا سکتے ہیں۔');
+    setEditingTextItem(newText);
+    setEditTextValue(newText.text);
+    showToast('نئی تحریر شامل ہو گئی! دونوں طرف سے سٹریچ کر کے بڑا چھوٹا کر سکتے ہیں۔');
+  };
+
+  const handleSaveEditText = () => {
+    if (editingTextItem) {
+      setTextList((prev) =>
+        prev.map((t) => (t.id === editingTextItem.id ? { ...t, text: editTextValue } : t))
+      );
+      setEditingTextItem(null);
+    }
   };
 
   const handleUndo = () => {
@@ -628,7 +651,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     }
   };
 
-  // High resolution composite image export
+  // High resolution composite image export (No extra clutter or boilerplate)
   const handleExportImage = async () => {
     try {
       showToast('تصویر تیار ہو رہی ہے...');
@@ -640,7 +663,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
 
       ctx.scale(2, 2);
 
-      // 1. Background white sheet
+      // 1. Background clean white sheet
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, SHEET_WIDTH, totalSheetHeight);
 
@@ -695,34 +718,76 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         } catch {}
       }
 
-      // 2. Draw canvas drawing strokes
+      // 2. Draw canvas drawing strokes (with exact opacity)
       const drawingCanvas = canvasRef.current;
       if (drawingCanvas) {
         ctx.drawImage(drawingCanvas, 0, 0, SHEET_WIDTH, totalSheetHeight);
       }
 
-      // 3. Draw all Draggable Text elements
+      // 3. Draw all custom stretchable text boxes with clean multi-line wrapping
       textList.forEach((t) => {
         ctx.save();
         ctx.font = `${t.isBold ? 'bold ' : ''}${t.fontSize}px 'Jameel Noori Nastaleeq', 'Noto Nastaliq Urdu', serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.textBaseline = 'top';
 
-        const textMetrics = ctx.measureText(t.text);
-        const padX = 10;
-        const padY = 6;
-        const boxW = textMetrics.width + padX * 2;
-        const boxH = t.fontSize * 1.5 + padY * 2;
-
+        // Draw background box if not transparent
         if (t.bgColor && t.bgColor !== 'transparent') {
           ctx.fillStyle = t.bgColor;
           ctx.beginPath();
-          ctx.roundRect(t.x - boxW / 2, t.y - boxH / 2, boxW, boxH, 6);
+          ctx.roundRect(t.x, t.y, t.width, t.height, 6);
           ctx.fill();
         }
 
+        // Text drawing with wrapping inside t.width
         ctx.fillStyle = t.color;
-        ctx.fillText(t.text, t.x, t.y);
+        const lineHeight = t.fontSize * 1.5;
+        const padX = 10;
+        const padY = 8;
+        const maxTextW = t.width - padX * 2;
+
+        const lines = t.text.split('\n');
+        let currentY = t.y + padY;
+
+        for (const line of lines) {
+          const words = line.split(' ');
+          let currentLine = '';
+
+          for (let n = 0; n < words.length; n++) {
+            const testLine = currentLine ? `${currentLine} ${words[n]}` : words[n];
+            const metrics = ctx.measureText(testLine);
+            if (metrics.width > maxTextW && n > 0) {
+              let drawX = t.x + padX;
+              if (t.textAlign === 'center') {
+                drawX = t.x + t.width / 2;
+                ctx.textAlign = 'center';
+              } else if (t.textAlign === 'right') {
+                drawX = t.x + t.width - padX;
+                ctx.textAlign = 'right';
+              } else {
+                ctx.textAlign = 'left';
+              }
+              ctx.fillText(currentLine, drawX, currentY);
+              currentLine = words[n];
+              currentY += lineHeight;
+            } else {
+              currentLine = testLine;
+            }
+          }
+          if (currentLine) {
+            let drawX = t.x + padX;
+            if (t.textAlign === 'center') {
+              drawX = t.x + t.width / 2;
+              ctx.textAlign = 'center';
+            } else if (t.textAlign === 'right') {
+              drawX = t.x + t.width - padX;
+              ctx.textAlign = 'right';
+            } else {
+              ctx.textAlign = 'left';
+            }
+            ctx.fillText(currentLine, drawX, currentY);
+            currentY += lineHeight;
+          }
+        }
         ctx.restore();
       });
 
@@ -732,7 +797,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
       link.href = dataUrl;
       link.download = `Ehtisab-Sanad-Vol${activeVolume.volumeNumber}-Page${currentPage}.jpg`;
       link.click();
-      showToast('سند و حوالہ تصویر کامیابی سے ڈاؤن لوڈ ہو گئی!');
+      showToast('سند تصویر کامیابی سے محفوظ ہو گئی!');
     } catch {
       showToast('تصویر برآمد کرنے میں دشواری پیش آئی۔');
     }
@@ -748,9 +813,8 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
       onMouseUp={handleSheetPointerUp}
       onTouchEnd={handleSheetPointerUp}
     >
-      {/* 1. TOP HEADER: Back Button + Title + Page Switchers + Download */}
+      {/* 1. TOP HEADER: Back + Volume & Page Switcher + Save Image Button */}
       <header className="h-14 bg-stone-900 border-b border-stone-800 px-3 sm:px-4 flex items-center justify-between z-30 shrink-0">
-        {/* Left: Volume & Page Selectors */}
         <div className="flex items-center gap-2">
           {/* Back Button */}
           <button
@@ -762,7 +826,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
             <span className="font-nastaliq text-sm">واپس</span>
           </button>
 
-          {/* Volume Dropdown Button */}
+          {/* Volume Dropdown */}
           <div className="relative">
             <button
               onClick={() => setShowVolumePicker(!showVolumePicker)}
@@ -833,12 +897,12 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
           </div>
         </div>
 
-        {/* Center / Right: Export Button */}
+        {/* Right: Export Button */}
         <div className="flex items-center gap-2">
           <button
             onClick={handleExportImage}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-stone-950 font-bold text-xs sm:text-sm shadow-xl cursor-pointer transition-all active:scale-95"
-            title="سند و حوالہ کارڈ محفوظ کریں"
+            title="سند و حوالہ تصویر محفوظ کریں"
           >
             <Download className="w-4 h-4 stroke-[2.5]" />
             <span className="font-nastaliq text-sm sm:text-base">سند محفوظ کریں</span>
@@ -846,67 +910,62 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         </div>
       </header>
 
-      {/* 2. SECONDARY TOOLBAR: Tool Selectors + Draggable Text Manager */}
-      <div className="h-12 bg-stone-900/90 border-b border-stone-800 px-3 flex flex-wrap items-center justify-between gap-2 z-20 text-xs shrink-0">
-        {/* Drawing & Text Tools */}
+      {/* 2. PRIMARY TOOLBAR: Tool Selectors (Highlighter / Box / Line / Text) + Undo/Redo */}
+      <div className="bg-stone-900 border-b border-stone-800 px-3 py-2 flex flex-wrap items-center justify-between gap-2 z-20 text-xs shrink-0">
         <div className="flex items-center gap-1.5">
           {/* Highlighter */}
           <button
             onClick={() => setActiveTool('highlight')}
-            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
               activeTool === 'highlight'
-                ? 'bg-amber-600 text-stone-950 font-bold shadow'
+                ? 'bg-amber-500 text-stone-950 font-bold shadow-md'
                 : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
             }`}
-            title="ہائی لائٹر"
           >
             <Highlighter className="w-4 h-4" />
-            <span className="hidden sm:inline">ہائی لائٹر</span>
+            <span>ہائی لائٹر</span>
           </button>
 
-          {/* Box Tool */}
+          {/* Box */}
           <button
             onClick={() => setActiveTool('box')}
-            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
               activeTool === 'box'
-                ? 'bg-amber-600 text-stone-950 font-bold shadow'
+                ? 'bg-amber-500 text-stone-950 font-bold shadow-md'
                 : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
             }`}
-            title="چوکھٹا (Box)"
           >
             <Square className="w-4 h-4" />
-            <span className="hidden sm:inline">باکس</span>
+            <span>باکس</span>
           </button>
 
-          {/* Line Tool */}
+          {/* Line */}
           <button
             onClick={() => setActiveTool('line')}
-            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
               activeTool === 'line'
-                ? 'bg-amber-600 text-stone-950 font-bold shadow'
+                ? 'bg-amber-500 text-stone-950 font-bold shadow-md'
                 : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
             }`}
-            title="لائن مارکر"
           >
             <Minus className="w-4 h-4" />
-            <span className="hidden sm:inline">لائن</span>
+            <span>لائن</span>
           </button>
 
           {/* Text Tool */}
           <button
             onClick={() => {
               setActiveTool('text');
-              setShowAddTextModal(true);
+              handleAddNewText();
             }}
-            className={`p-2 rounded-xl flex items-center gap-1 transition-colors cursor-pointer ${
+            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
               activeTool === 'text'
-                ? 'bg-emerald-600 text-stone-950 font-bold shadow'
+                ? 'bg-emerald-600 text-white font-bold shadow-md'
                 : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
             }`}
-            title="نئی تحریر شامل کریں"
           >
             <Type className="w-4 h-4" />
-            <span className="hidden sm:inline">تحریر لکھیں</span>
+            <span>نئی تحریر شامل کریں</span>
           </button>
 
           {/* Undo / Redo */}
@@ -930,133 +989,227 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
           </div>
         </div>
 
-        {/* Selected Text Manipulator (Move / Font / Color / Delete) */}
-        {selectedTextItem && (
-          <div className="flex items-center gap-1.5 bg-stone-950 border border-emerald-600/50 rounded-2xl px-2 py-1 shadow-md animate-in fade-in">
-            <span className="text-[11px] text-emerald-400 font-bold hidden md:inline">
-              منتخب تحریر موو کریں:
-            </span>
-
-            {/* Nudge Buttons (▲ ▼ ◄ ►) */}
-            <div className="flex items-center gap-0.5 bg-stone-900 p-0.5 rounded-lg border border-stone-800">
+        {/* Top Space Setting for Text Area */}
+        <div className="flex items-center gap-1.5 bg-stone-950 px-2 py-1 rounded-xl border border-stone-800">
+          <span className="text-[11px] text-stone-400 font-sans">اوپر تحریر کی جگہ:</span>
+          <div className="flex items-center gap-1">
+            {[
+              { label: 'عام', px: 55 },
+              { label: 'کشادہ', px: 95 },
+              { label: 'بغیر جگہ', px: 15 },
+            ].map((sp) => (
               <button
-                onClick={() => nudgeText(0, -10)}
-                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
-                title="اوپر موو کریں"
-              >
-                <ArrowUp className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => nudgeText(0, 10)}
-                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
-                title="نیچے موو کریں"
-              >
-                <ArrowDown className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => nudgeText(-15, 0)}
-                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
-                title="بائیں موو کریں"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => nudgeText(15, 0)}
-                className="p-1 text-stone-300 hover:text-white hover:bg-stone-800 rounded"
-                title="دائیں موو کریں"
-              >
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {/* Font Size (+ / -) */}
-            <div className="flex items-center gap-1 bg-stone-900 px-1.5 py-0.5 rounded-lg border border-stone-800 text-[11px]">
-              <button
-                onClick={() => updateSelectedTextFontSize(-2)}
-                className="text-stone-400 hover:text-white font-bold px-1"
-              >
-                A-
-              </button>
-              <span className="font-mono">{selectedTextItem.fontSize}</span>
-              <button
-                onClick={() => updateSelectedTextFontSize(2)}
-                className="text-stone-400 hover:text-white font-bold px-1"
-              >
-                A+
-              </button>
-            </div>
-
-            {/* Color switcher */}
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => updateSelectedTextColor('#065f46')}
-                className="w-4 h-4 rounded-full bg-emerald-800 border border-white/40 cursor-pointer"
-                title="سبز"
-              />
-              <button
-                onClick={() => updateSelectedTextColor('#f59e0b')}
-                className="w-4 h-4 rounded-full bg-amber-500 border border-white/40 cursor-pointer"
-                title="سنہری"
-              />
-              <button
-                onClick={() => updateSelectedTextColor('#1c1917')}
-                className="w-4 h-4 rounded-full bg-stone-900 border border-white/40 cursor-pointer"
-                title="سیاہ"
-              />
-              <button
-                onClick={() => updateSelectedTextColor('#dc2626')}
-                className="w-4 h-4 rounded-full bg-red-600 border border-white/40 cursor-pointer"
-                title="سرخ"
-              />
-            </div>
-
-            {/* Delete button */}
-            <button
-              onClick={deleteSelectedText}
-              className="p-1 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 rounded"
-              title="تحریر مٹائیں"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-
-        {/* Top Space Adjuster */}
-        <div className="flex items-center gap-1">
-          <span className="text-[11px] text-stone-400 font-sans hidden sm:inline">اوپر جگہ:</span>
-          <div className="flex items-center bg-stone-950 p-0.5 rounded-xl border border-stone-800 text-[11px]">
-            {(['0', '10', '20', '30'] as const).map((opt) => (
-              <button
-                key={opt}
-                onClick={() => setTopSpaceOption(opt)}
-                className={`px-2 py-0.5 rounded-lg transition-colors cursor-pointer ${
-                  topSpaceOption === opt
-                    ? 'bg-emerald-600 text-stone-950 font-bold'
-                    : 'text-stone-400 hover:text-white'
+                key={sp.px}
+                onClick={() => setTopSpacePx(sp.px)}
+                className={`px-2 py-0.5 rounded-lg text-[10px] font-sans transition-colors cursor-pointer ${
+                  topSpacePx === sp.px
+                    ? 'bg-emerald-600 text-white font-bold'
+                    : 'text-stone-400 hover:text-stone-200'
                 }`}
               >
-                {opt}%
+                {sp.label}
               </button>
             ))}
           </div>
         </div>
       </div>
 
-      {/* Toast Notification */}
-      {toastMsg && (
-        <div className="absolute top-28 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-emerald-400 border border-emerald-600 px-4 py-2 rounded-2xl text-xs font-nastaliq shadow-2xl flex items-center gap-2">
-          <Check className="w-4 h-4" />
-          <span>{toastMsg}</span>
+      {/* 3. DEDICATED TOOL CONFIGURATION STRIP */}
+      {/* If Highlighter or Drawing Tool Active */}
+      {(activeTool === 'highlight' || activeTool === 'box' || activeTool === 'line') && (
+        <div className="bg-stone-900/90 border-b border-stone-800 px-3 py-1.5 flex flex-wrap items-center justify-between gap-3 text-xs z-20 shrink-0">
+          {/* Color Palette */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-stone-400 font-sans">رنگ:</span>
+            <div className="flex items-center gap-1">
+              {COLOR_OPTIONS.slice(0, 5).map((col) => (
+                <button
+                  key={col.id}
+                  onClick={() => setSelectedColor(col.value)}
+                  style={{ backgroundColor: col.value }}
+                  className={`w-6 h-6 rounded-full border-2 transition-transform cursor-pointer ${
+                    selectedColor === col.value ? 'border-white scale-110 shadow' : 'border-stone-700'
+                  }`}
+                  title={col.label}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* DEDICATED HIGHLIGHTER OPACITY PERCENTAGE SELECTOR (User Requirement 3) */}
+          {activeTool === 'highlight' && (
+            <div className="flex items-center gap-2 bg-stone-950 px-3 py-1 rounded-2xl border border-amber-500/40">
+              <span className="text-[11px] text-amber-300 font-bold font-sans">
+                ہائی لائٹ شفافیت (Opacity):
+              </span>
+              <div className="flex items-center gap-1">
+                {[20, 40, 60, 80, 100].map((pct) => (
+                  <button
+                    key={pct}
+                    onClick={() => setHighlighterOpacity(pct)}
+                    className={`px-2 py-0.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                      highlighterOpacity === pct
+                        ? 'bg-amber-500 text-stone-950 shadow'
+                        : 'text-stone-400 hover:text-white bg-stone-900'
+                    }`}
+                  >
+                    {pct}%
+                  </button>
+                ))}
+              </div>
+
+              {/* Stroke Width / Thickness */}
+              <div className="flex items-center gap-1 border-r border-stone-800 pr-2 mr-1">
+                <span className="text-[11px] text-stone-400">موٹائی:</span>
+                {[
+                  { label: 'باریک', w: 14 },
+                  { label: 'درمیانہ', w: 24 },
+                  { label: 'چوڑا', w: 36 },
+                ].map((th) => (
+                  <button
+                    key={th.w}
+                    onClick={() => setHighlighterWidth(th.w)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer ${
+                      highlighterWidth === th.w ? 'bg-emerald-600 text-white' : 'text-stone-400 hover:text-white'
+                    }`}
+                  >
+                    {th.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* 3. MAIN CENTER CANVAS VIEWPORT */}
+      {/* If Text Item is Selected: Stretch & Edit Toolbar */}
+      {selectedTextItem && (
+        <div className="bg-stone-900/95 border-b border-emerald-600/50 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs z-20 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-emerald-400 font-bold font-sans">
+              منتخب تحریر (دونوں طرف سے سٹریچ کریں):
+            </span>
+
+            {/* Edit Text Button */}
+            <button
+              onClick={() => {
+                setEditingTextItem(selectedTextItem);
+                setEditTextValue(selectedTextItem.text);
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer shadow"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>تحریر بدلیں</span>
+            </button>
+
+            {/* Font Size (+/-) */}
+            <div className="flex items-center gap-1 bg-stone-950 px-2 py-0.5 rounded-lg border border-stone-800 text-[11px]">
+              <button
+                onClick={() => updateSelectedTextFontSize(-2)}
+                className="text-stone-400 hover:text-white font-bold px-1"
+                title="فونٹ چھوٹا کریں"
+              >
+                A-
+              </button>
+              <span className="font-mono text-emerald-400 font-bold">{selectedTextItem.fontSize}</span>
+              <button
+                onClick={() => updateSelectedTextFontSize(2)}
+                className="text-stone-400 hover:text-white font-bold px-1"
+                title="فونٹ بڑا کریں"
+              >
+                A+
+              </button>
+            </div>
+
+            {/* Bold Toggle */}
+            <button
+              onClick={toggleSelectedTextBold}
+              className={`p-1.5 rounded-lg border text-xs cursor-pointer ${
+                selectedTextItem.isBold
+                  ? 'bg-amber-500 text-stone-950 font-bold border-amber-400'
+                  : 'bg-stone-950 text-stone-400 border-stone-800'
+              }`}
+              title="بولڈ کریں"
+            >
+              <Bold className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Alignment */}
+            <div className="flex items-center bg-stone-950 rounded-lg border border-stone-800 p-0.5">
+              <button
+                onClick={() => updateSelectedTextAlign('right')}
+                className={`p-1 rounded ${selectedTextItem.textAlign === 'right' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                title="دائیں سیدھ"
+              >
+                <AlignRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => updateSelectedTextAlign('center')}
+                className={`p-1 rounded ${selectedTextItem.textAlign === 'center' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                title="درمیان"
+              >
+                <AlignCenter className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => updateSelectedTextAlign('left')}
+                className={`p-1 rounded ${selectedTextItem.textAlign === 'left' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                title="بائیں سیدھ"
+              >
+                <AlignLeft className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Color switcher */}
+            <div className="flex items-center gap-1">
+              {['#065f46', '#f59e0b', '#1c1917', '#dc2626', '#ffffff'].map((col) => (
+                <button
+                  key={col}
+                  onClick={() => updateSelectedTextColor(col)}
+                  style={{ backgroundColor: col }}
+                  className="w-5 h-5 rounded-full border border-white/50 cursor-pointer"
+                />
+              ))}
+            </div>
+
+            {/* Background switcher */}
+            <div className="flex items-center gap-1 border-r border-stone-800 pr-2">
+              <span className="text-[10px] text-stone-400">بیک گراؤنڈ:</span>
+              {[
+                { label: 'سفید', val: '#ffffffdd' },
+                { label: 'سنہری', val: '#fef3c7dd' },
+                { label: 'شفاف', val: 'transparent' },
+                { label: 'سیاہ', val: '#000000bb' },
+              ].map((bg) => (
+                <button
+                  key={bg.label}
+                  onClick={() => updateSelectedTextBg(bg.val)}
+                  className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer ${
+                    selectedTextItem.bgColor === bg.val ? 'bg-amber-500 text-stone-950 font-bold' : 'text-stone-400'
+                  }`}
+                >
+                  {bg.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Delete button */}
+            <button
+              onClick={deleteSelectedText}
+              className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 rounded-lg cursor-pointer"
+              title="تحریر مٹائیں"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 4. MAIN CENTER CANVAS VIEWPORT (CLEAN & CLUTTER-FREE) */}
       <div
         ref={viewportRef}
         className="flex-1 relative overflow-hidden bg-stone-950 flex items-center justify-center p-2"
         dir="ltr"
       >
-        {/* Outer Sized Box: Exactly scaled width and height */}
         <div
           style={{
             width: `${Math.round(SHEET_WIDTH * effectiveScale)}px`,
@@ -1079,19 +1232,6 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
             className="absolute bg-white rounded-lg shadow-2xl border border-stone-300 overflow-hidden select-none flex flex-col justify-between"
             dir="rtl"
           >
-            {/* Top Space with dashed guideline */}
-            <div
-              style={{ height: `${topSpacePx}px` }}
-              className="absolute top-0 left-0 right-0 px-4 flex items-center justify-between border-b border-dashed border-stone-200 pointer-events-none"
-            >
-              <span className="text-[10px] text-stone-400 font-nastaliq">
-                (اوپر جگہ برائے عنوان، سند و حوالہ)
-              </span>
-              <span className="text-xs font-bold text-emerald-800 font-nastaliq">
-                کتاب &quot;احتسابِ ناصبیت&quot; — جلد {activeVolume.volumeNumber}
-              </span>
-            </div>
-
             {/* REAL DUAL PAGES: (Side 1: Real Reference Page) + (Side 2: Real Volume Cover / Title Page) */}
             <div className="flex items-center justify-center gap-4 px-4 my-auto relative z-10">
               {/* PAGE 1: Reference Content Page (Right Side in RTL) */}
@@ -1099,17 +1239,12 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                 style={{ width: `${PAGE_WIDTH}px`, height: `${PAGE_HEIGHT}px` }}
                 className="bg-white rounded p-1 border border-stone-300 shadow-md flex flex-col justify-between overflow-hidden shrink-0 relative"
               >
-                <div className="text-[10px] text-stone-500 font-sans px-2 py-0.5 flex justify-between items-center border-b border-stone-100 bg-stone-50">
-                  <span className="font-bold text-emerald-700">مطلوبہ صفحہ (سند)</span>
-                  <span className="font-mono">ص {currentPage}</span>
-                </div>
-
                 {/* Scanned / Rendered Book Page Image */}
                 <div className="flex-1 w-full relative overflow-hidden bg-white flex items-center justify-center">
                   {isRenderingRefPage ? (
                     <div className="flex flex-col items-center justify-center gap-2 p-4 text-center">
                       <Loader2 className="w-6 h-6 text-emerald-600 animate-spin" />
-                      <span className="text-[11px] text-stone-500 font-nastaliq">صفحہ تیار ہو رہا ہے...</span>
+                      <span className="text-[11px] text-stone-500 font-nastaliq">صفحہ لوڈ ہو رہا ہے...</span>
                     </div>
                   ) : refPageImage ? (
                     <img
@@ -1124,10 +1259,6 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                     </div>
                   )}
                 </div>
-
-                <div className="text-center text-[10px] text-stone-600 font-mono py-0.5 bg-stone-50 border-t border-stone-100">
-                  احتساب ناصبیت جلد {activeVolume.volumeNumber} — ص {currentPage}
-                </div>
               </div>
 
               {/* PAGE 2: Official Volume Title / Cover Page (Left Side in RTL) */}
@@ -1135,6 +1266,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                 style={{ width: `${PAGE_WIDTH}px`, height: `${PAGE_HEIGHT}px` }}
                 className="bg-white rounded p-1 border border-stone-300 shadow-md flex flex-col justify-between overflow-hidden shrink-0 relative"
               >
+                {/* Subtle Toggle for Cover vs Title Page 1 */}
                 <div className="text-[10px] text-stone-500 font-sans px-2 py-0.5 flex justify-between items-center border-b border-stone-100 bg-stone-50">
                   <div className="flex items-center gap-1">
                     <button
@@ -1184,24 +1316,10 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                     />
                   )}
                 </div>
-
-                <div className="text-center text-[10px] text-stone-600 font-mono py-0.5 bg-stone-50 border-t border-stone-100">
-                  سرورقِ کتاب — {activeVolume.volumeTitleUrdu}
-                </div>
               </div>
             </div>
 
-            {/* Bottom Watermark / Citation Banner */}
-            <div className="absolute bottom-0 left-0 right-0 h-10 px-4 flex items-center justify-between border-t border-stone-200 bg-stone-50/90 pointer-events-none">
-              <span className="text-[10px] text-stone-500 font-sans">
-                آفیشل ڈیجیٹل ایڈیشن برائے محققین
-              </span>
-              <span className="text-xs font-bold font-nastaliq text-emerald-800">
-                مجموعہ کتب &quot;احتسابِ ناصبیت&quot; مکمل ۱۲ جلدیں
-              </span>
-            </div>
-
-            {/* 4. Canvas Drawing Layer (For highlighters, boxes, and underlines) */}
+            {/* 5. Canvas Drawing Layer (For highlighters, boxes, and underlines) */}
             <canvas
               ref={canvasRef}
               width={SHEET_WIDTH}
@@ -1213,11 +1331,11 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
               onTouchMove={handlePointerMove}
               onTouchEnd={handlePointerUp}
               className={`absolute inset-0 z-20 ${
-                activeTool === 'move' ? 'pointer-events-none' : 'cursor-crosshair'
+                activeTool === 'text' ? 'pointer-events-none' : 'cursor-crosshair'
               }`}
             />
 
-            {/* 5. Draggable Movable Text Elements (Requirement 2) */}
+            {/* 6. RESIZABLE & STRETCHABLE DRAGGABLE TEXT BOXES (User Requirement 2) */}
             <div className="absolute inset-0 z-30 pointer-events-none">
               {textList.map((item) => {
                 const isSelected = item.id === selectedTextId;
@@ -1226,25 +1344,83 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                     key={item.id}
                     onMouseDown={(e) => handleTextMouseDown(item.id, e)}
                     onTouchStart={(e) => handleTextMouseDown(item.id, e)}
+                    onDoubleClick={() => {
+                      setEditingTextItem(item);
+                      setEditTextValue(item.text);
+                    }}
                     style={{
                       left: `${item.x}px`,
                       top: `${item.y}px`,
-                      transform: 'translate(-50%, -50%)',
+                      width: `${item.width}px`,
+                      minHeight: `${item.height}px`,
                       fontSize: `${item.fontSize}px`,
                       color: item.color,
                       backgroundColor: item.bgColor,
+                      textAlign: item.textAlign,
                     }}
-                    className={`absolute pointer-events-auto cursor-move px-2.5 py-1 rounded-md transition-shadow font-nastaliq leading-normal text-center ${
+                    className={`absolute pointer-events-auto cursor-move p-2 rounded-lg font-nastaliq leading-relaxed transition-shadow ${
                       isSelected
-                        ? 'ring-2 ring-emerald-500 ring-offset-2 shadow-xl'
+                        ? 'ring-2 ring-emerald-500 ring-offset-2 shadow-2xl bg-white/95'
                         : 'hover:ring-1 hover:ring-stone-400'
                     }`}
                   >
-                    <span>{item.text}</span>
+                    <div className="break-words whitespace-pre-wrap select-none pointer-events-none">
+                      {item.text}
+                    </div>
+
+                    {/* Resizing & Stretch Handles (Active when item is selected) */}
                     {isSelected && (
-                      <div className="absolute -top-3 -right-3 w-5 h-5 bg-emerald-600 text-white rounded-full flex items-center justify-center text-[10px] shadow pointer-events-none">
-                        <Move className="w-3 h-3" />
-                      </div>
+                      <>
+                        {/* Right Stretch Handle (East) */}
+                        <div
+                          onMouseDown={(e) => handleResizeStart(item.id, 'e', e)}
+                          onTouchStart={(e) => handleResizeStart(item.id, 'e', e)}
+                          className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-7 bg-emerald-600 border border-white rounded shadow cursor-ew-resize flex items-center justify-center z-40"
+                          title="چوڑائی بڑھائیں / سٹریچ کریں"
+                        >
+                          <div className="w-0.5 h-3 bg-white rounded" />
+                        </div>
+
+                        {/* Left Stretch Handle (West) */}
+                        <div
+                          onMouseDown={(e) => handleResizeStart(item.id, 'w', e)}
+                          onTouchStart={(e) => handleResizeStart(item.id, 'w', e)}
+                          className="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-7 bg-emerald-600 border border-white rounded shadow cursor-ew-resize flex items-center justify-center z-40"
+                          title="چوڑائی بڑھائیں / سٹریچ کریں"
+                        >
+                          <div className="w-0.5 h-3 bg-white rounded" />
+                        </div>
+
+                        {/* Bottom Stretch Handle (South) */}
+                        <div
+                          onMouseDown={(e) => handleResizeStart(item.id, 's', e)}
+                          onTouchStart={(e) => handleResizeStart(item.id, 's', e)}
+                          className="absolute bottom-[-8px] left-1/2 -translate-x-1/2 w-7 h-4 bg-emerald-600 border border-white rounded shadow cursor-ns-resize flex items-center justify-center z-40"
+                          title="لمبائی بڑھائیں"
+                        >
+                          <div className="w-3 h-0.5 bg-white rounded" />
+                        </div>
+
+                        {/* Corner Stretch Handle (Bottom-Right) */}
+                        <div
+                          onMouseDown={(e) => handleResizeStart(item.id, 'se', e)}
+                          onTouchStart={(e) => handleResizeStart(item.id, 'se', e)}
+                          className="absolute -right-2.5 -bottom-2.5 w-5 h-5 bg-amber-500 border-2 border-white rounded-full shadow-lg cursor-nwse-resize z-50 flex items-center justify-center"
+                          title="دونوں طرف سے سٹریچ کریں"
+                        >
+                          <div className="w-1.5 h-1.5 bg-white rounded-full" />
+                        </div>
+
+                        {/* Corner Stretch Handle (Bottom-Left) */}
+                        <div
+                          onMouseDown={(e) => handleResizeStart(item.id, 'sw', e)}
+                          onTouchStart={(e) => handleResizeStart(item.id, 'sw', e)}
+                          className="absolute -left-2.5 -bottom-2.5 w-5 h-5 bg-amber-500 border-2 border-white rounded-full shadow-lg cursor-nesw-resize z-50 flex items-center justify-center"
+                          title="دونوں طرف سے سٹریچ کریں"
+                        >
+                          <div className="w-1.5 h-1.5 bg-white rounded-full" />
+                        </div>
+                      </>
                     )}
                   </div>
                 );
@@ -1254,106 +1430,68 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         </div>
       </div>
 
-      {/* 4. BOTTOM BAR: Page Jumper & Quick Text Insertion */}
-      <footer className="h-14 bg-stone-900 border-t border-stone-800 px-4 flex items-center justify-between text-xs shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="text-stone-400 font-sans text-xs">صفحہ تبدیل کریں:</span>
-          <input
-            type="number"
-            min="1"
-            max={activeVolume.pageCount || 476}
-            value={currentPage}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
-              if (!isNaN(val)) {
-                setCurrentPage(Math.max(1, Math.min(activeVolume.pageCount || 476, val)));
-              }
-            }}
-            className="w-16 h-8 text-center bg-stone-950 border border-stone-700 rounded-lg text-emerald-400 font-mono font-bold"
-          />
-          <span className="text-stone-400 font-sans text-xs">/ {activeVolume.pageCount || 476}</span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowAddTextModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-emerald-400 border border-stone-700 cursor-pointer font-sans"
+      {/* 5. INLINE TEXT EDIT MODAL (When editing text) */}
+      {editingTextItem && (
+        <div
+          onClick={() => setEditingTextItem(null)}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-stone-900 border border-stone-800 rounded-3xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-in zoom-in-95"
+            dir="rtl"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>نئی تحریر شامل کریں</span>
-          </button>
-        </div>
-      </footer>
-
-      {/* ADD NEW TEXT MODAL */}
-      {showAddTextModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-stone-900 border border-stone-700 rounded-2xl p-5 shadow-2xl animate-in zoom-in-95">
-            <div className="flex items-center justify-between pb-3 border-b border-stone-800 mb-3">
-              <h3 className="font-nastaliq text-lg font-bold text-amber-300">
-                سند پر نئی تحریر شامل کریں
-              </h3>
+            <div className="flex items-center justify-between border-b border-stone-800 pb-2">
+              <h4 className="font-nastaliq text-xl font-bold text-amber-300">
+                تحریر میں ترمیم فرمائیں
+              </h4>
               <button
-                onClick={() => setShowAddTextModal(false)}
-                className="text-stone-400 hover:text-white"
+                onClick={() => setEditingTextItem(null)}
+                className="p-1 text-stone-400 hover:text-white rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleAddNewTextSubmit} className="space-y-4">
-              <div>
-                <label className="text-xs text-stone-300 block mb-1 font-sans">
-                  تحریر / نوٹ / عنوان لکھیں:
-                </label>
-                <textarea
-                  rows={2}
-                  placeholder="مثلاً: اہم حوالہ در تحقیق و اثبات شہادت امام حسین..."
-                  value={newTextInput}
-                  onChange={(e) => setNewTextInput(e.target.value)}
-                  className="w-full bg-stone-950 border border-stone-700 rounded-xl px-3 py-2 text-stone-100 placeholder-stone-500 focus:outline-none focus:border-emerald-500 font-nastaliq text-sm"
-                  autoFocus
-                />
-              </div>
+            <div>
+              <label className="block text-xs font-semibold text-stone-300 mb-1 font-sans">
+                تحریر / سند / عنوان لکھیں:
+              </label>
+              <textarea
+                rows={3}
+                value={editTextValue}
+                onChange={(e) => setEditTextValue(e.target.value)}
+                className="w-full bg-stone-950 border border-stone-700 rounded-2xl p-3 text-sm text-stone-100 font-nastaliq text-lg leading-relaxed focus:outline-none focus:border-amber-400"
+                placeholder="تحریر یہاں لکھیں..."
+                autoFocus
+              />
+            </div>
 
-              <div>
-                <label className="text-xs text-stone-300 block mb-1 font-sans">
-                  رنگ منتخب فرمائیں:
-                </label>
-                <div className="flex items-center gap-2">
-                  {COLOR_OPTIONS.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => setSelectedColor(c.value)}
-                      style={{ backgroundColor: c.value }}
-                      className={`w-7 h-7 rounded-full border-2 transition-transform cursor-pointer ${
-                        selectedColor === c.value ? 'scale-110 border-white' : 'border-transparent'
-                      }`}
-                      title={c.label}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
-                <button
-                  type="button"
-                  onClick={() => setShowAddTextModal(false)}
-                  className="px-4 py-1.5 rounded-xl bg-stone-800 text-stone-300 text-xs"
-                >
-                  منسوخ کریں
-                </button>
-                <button
-                  type="submit"
-                  disabled={!newTextInput.trim()}
-                  className="px-5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-stone-950 font-bold text-xs shadow-lg cursor-pointer"
-                >
-                  تحریر شامل کریں
-                </button>
-              </div>
-            </form>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => setEditingTextItem(null)}
+                className="px-4 py-2 rounded-xl text-xs text-stone-400 hover:bg-stone-800 font-sans cursor-pointer"
+              >
+                منسوخ
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEditText}
+                className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs font-sans cursor-pointer shadow-lg"
+              >
+                محفوظ کریں
+              </button>
+            </div>
           </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 z-50 bg-stone-900 text-emerald-400 border border-emerald-600 px-4 py-2 rounded-2xl text-xs font-nastaliq shadow-2xl flex items-center gap-2">
+          <Check className="w-4 h-4" />
+          <span>{toastMsg}</span>
         </div>
       )}
     </div>

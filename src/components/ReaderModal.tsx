@@ -683,9 +683,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           <div className="w-[94vw] max-w-[650px] min-h-[520px] sm:min-h-[700px] bg-white rounded-lg shadow-xl border border-stone-300 p-6 sm:p-10 flex flex-col justify-between text-stone-800 my-auto animate-in fade-in zoom-in-95 duration-200">
             {/* Top Page Running Header (Styled like authentic Urdu Islamic book header) */}
             <div className="border-b border-stone-300 pb-3 flex items-center justify-between text-stone-600 text-xs font-nastaliq">
-              <span>مجموعہ کتب: احتسابِ ناصبیت</span>
+              <span>{volume.volumeNumber > 0 ? 'مجموعہ کتب: احتسابِ ناصبیت' : 'سلسلہ ردِ اعتراضات'}</span>
               <span className="font-bold text-emerald-800">{volume.volumeTitleUrdu}</span>
-              <span>جلد {volume.volumeNumber}</span>
+              <span>{volume.volumeNumber > 0 ? `جلد ${volume.volumeNumber}` : 'خصوصی کتاب'}</span>
             </div>
 
             {/* Center Loading Status & Live Percentage */}

@@ -89,20 +89,42 @@ export const VERIFIED_ARCHIVE_VOLUMES: Record<number, {
 };
 
 export function resolveVolumeArchiveId(volumeNumber: number, existingId?: string): string {
-  if (existingId && existingId.trim() && !existingId.includes('placeholder')) {
-    return extractArchiveId(existingId);
+  const trimmed = (existingId || '').trim();
+  if (trimmed && !trimmed.includes('placeholder')) {
+    return extractArchiveId(trimmed);
   }
-  return VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.archiveId || `ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volumeNumber}`;
+  if (volumeNumber >= 1 && volumeNumber <= 12) {
+    return VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.archiveId || `ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volumeNumber}`;
+  }
+  return trimmed || '';
 }
 
 export function resolveVolumePdfUrl(volumeNumber: number, existingUrl?: string): string {
-  if (VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.pdfUrl) {
+  const trimmed = (existingUrl || '').trim();
+
+  // If this is a response book or custom book (volumeNumber <= 0 or > 12)
+  if (volumeNumber <= 0 || volumeNumber > 12) {
+    if (trimmed) return trimmed;
+  }
+
+  // If existingUrl is a local blob, data URL, uploaded reference, or local path, always preserve it!
+  if (trimmed.startsWith('blob:') || trimmed.startsWith('data:') || trimmed.startsWith('uploaded:') || trimmed.startsWith('/')) {
+    return trimmed;
+  }
+
+  // If verified volume 1..12 has a verified direct high-speed URL
+  if (volumeNumber >= 1 && volumeNumber <= 12 && VERIFIED_ARCHIVE_VOLUMES[volumeNumber]?.pdfUrl) {
     return VERIFIED_ARCHIVE_VOLUMES[volumeNumber].pdfUrl;
   }
-  if (existingUrl && existingUrl.trim() && existingUrl.includes('archive.org')) {
-    return existingUrl.trim();
+
+  // If any valid URL is provided
+  if (trimmed) {
+    return trimmed;
   }
-  return `https://ia800903.us.archive.org/2/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volumeNumber}/ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volumeNumber}.pdf`;
+
+  // Safe fallback for 1-12
+  const volNum = volumeNumber >= 1 && volumeNumber <= 12 ? volumeNumber : 1;
+  return `https://ia800903.us.archive.org/2/items/ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volNum}/ehtesabe-nasbiat-by-allah-wasaya-deobandi-${volNum}.pdf`;
 }
 
 export function getArchivePageImageUrl(archiveId: string, pageNumber: number): string {
@@ -119,4 +141,89 @@ export function generateArchiveDownload(archiveId: string): string {
   const cleanId = extractArchiveId(archiveId);
   if (!cleanId) return '';
   return `https://archive.org/download/${cleanId}/${cleanId}.pdf`;
+}
+
+export interface ArchiveItemMetadataResult {
+  archiveId: string;
+  title: string;
+  author: string;
+  year: string;
+  topic: string;
+  description: string;
+  pageCount: number;
+  fileSize: string;
+  coverImageUrl: string;
+  pdfUrl: string;
+}
+
+export async function fetchArchiveMetadata(archiveIdOrUrl: string): Promise<ArchiveItemMetadataResult | null> {
+  const archiveId = extractArchiveId(archiveIdOrUrl);
+  if (!archiveId) return null;
+
+  try {
+    const res = await fetch(`https://archive.org/metadata/${encodeURIComponent(archiveId)}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error('Archive metadata not found');
+    const data = await res.json();
+    const meta = data.metadata || {};
+    const files = data.files || [];
+
+    // Find real PDF file
+    const pdfFiles = files.filter(
+      (f: any) => f.name && f.name.toLowerCase().endsWith('.pdf') && !f.name.toLowerCase().endsWith('_text.pdf')
+    );
+    const mainPdf = pdfFiles[0] || files.find((f: any) => f.name && f.name.toLowerCase().endsWith('.pdf'));
+
+    const server = data.server || 'ia800903.us.archive.org';
+    const dir = data.dir || `/items/${archiveId}`;
+
+    let pdfUrl = '';
+    let fileSize = '15 MB';
+    let pageCount = 100;
+
+    if (mainPdf) {
+      pdfUrl = `https://${server}${dir}/${encodeURIComponent(mainPdf.name)}`;
+      if (mainPdf.size) {
+        const mb = (parseInt(mainPdf.size, 10) / (1024 * 1024)).toFixed(1);
+        fileSize = `${mb} MB`;
+      }
+      if (mainPdf.imagecount) {
+        pageCount = parseInt(mainPdf.imagecount, 10);
+      }
+    } else {
+      pdfUrl = `https://archive.org/download/${archiveId}/${archiveId}.pdf`;
+    }
+
+    if (meta.imagecount && pageCount === 100) {
+      pageCount = parseInt(meta.imagecount, 10);
+    }
+
+    return {
+      archiveId,
+      title: meta.title || archiveId.replace(/[_-]+/g, ' '),
+      author: meta.creator || 'علمائے اہل سنت و محققین',
+      year: meta.year || meta.date ? `اشاعت ${meta.year || meta.date?.slice(0, 4)}ء` : 'اشاعت ۲۰۲۶ء',
+      topic: meta.subject || 'رد اعتراضات و مدلل جوابات',
+      description: meta.description ? meta.description.replace(/<[^>]*>/g, '') : '',
+      pageCount: pageCount || 100,
+      fileSize,
+      coverImageUrl: `https://archive.org/services/img/${archiveId}`,
+      pdfUrl,
+    };
+  } catch (e) {
+    console.warn('Failed to fetch archive metadata:', e);
+    return {
+      archiveId,
+      title: archiveId.replace(/[_-]+/g, ' '),
+      author: 'علمائے اہل سنت و محققین',
+      year: 'اشاعت ۲۰۲۶ء',
+      topic: 'رد اعتراضات و علمی جوابات',
+      description: '',
+      pageCount: 100,
+      fileSize: '15 MB',
+      coverImageUrl: `https://archive.org/services/img/${archiveId}`,
+      pdfUrl: `https://archive.org/download/${archiveId}/${archiveId}.pdf`,
+    };
+  }
 }

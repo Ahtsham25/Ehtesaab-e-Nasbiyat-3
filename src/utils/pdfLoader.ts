@@ -37,155 +37,81 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
     return await res.arrayBuffer();
   }
 
-  // Construct sources ordered by speed and reliability
-  const sources: string[] = [];
-  if (cleanUrl.startsWith('/api/pdf-proxy')) {
-    sources.push(cleanUrl);
-  } else {
-    sources.push(`/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`);
-  }
+  const proxyUrl = cleanUrl.startsWith('/api/pdf-proxy')
+    ? cleanUrl
+    : `/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`;
 
-  // Fallback to direct archive download if proxy is unreachable
-  if (cleanUrl.includes('archive.org')) {
-    sources.push(cleanUrl);
-  }
+  // 1. Primary Attempt: Stream with live progress
+  try {
+    const response = await fetch(proxyUrl, {
+      headers: { Accept: 'application/pdf,*/*' },
+    });
 
-  let lastError: Error | null = null;
+    if (!response.ok) {
+      throw new Error(`سرور جواب: ${response.status} (${response.statusText})`);
+    }
 
-  for (let i = 0; i < sources.length; i++) {
-    const targetUrl = sources[i];
+    const contentLength = response.headers.get('content-length');
+    const total = contentLength ? parseInt(contentLength, 10) : 14 * 1024 * 1024;
 
-    try {
-      const chunks: Uint8Array[] = [];
-      let received = 0;
-      let total = 15 * 1024 * 1024;
-      let resumeRetries = 0;
-      const MAX_RESUME_RETRIES = 5;
+    if (!response.body) {
+      const buf = await response.arrayBuffer();
+      if (onProgress) onProgress(100);
+      return buf;
+    }
 
-      while (resumeRetries <= MAX_RESUME_RETRIES) {
-        try {
-          const headers: Record<string, string> = { Accept: 'application/pdf,*/*' };
-          if (received > 0) {
-            headers['Range'] = `bytes=${received}-`;
-          }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
 
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 90000);
-
-          const response = await fetch(targetUrl, {
-            method: 'GET',
-            headers,
-            signal: controller.signal,
-          });
-
-          clearTimeout(timeoutId);
-
-          if (!response.ok && response.status !== 206) {
-            throw new Error(`سرور جواب: ${response.status} (${response.statusText})`);
-          }
-
-          // If server returned 200 instead of 206 for range request, reset received
-          if (received > 0 && response.status === 200) {
-            chunks.length = 0;
-            received = 0;
-          }
-
-          const contentLength = response.headers.get('content-length');
-          if (contentLength) {
-            const parsedLength = parseInt(contentLength, 10);
-            if (response.status === 206) {
-              const contentRange = response.headers.get('content-range');
-              if (contentRange) {
-                const matchTotal = contentRange.match(/\/(\d+)/);
-                if (matchTotal) total = parseInt(matchTotal[1], 10);
-              } else {
-                total = received + parsedLength;
-              }
-            } else {
-              total = parsedLength;
-            }
-          }
-
-          if (!response.body) {
-            const buf = await response.arrayBuffer();
-            if (onProgress) onProgress(100);
-            return buf;
-          }
-
-          const reader = response.body.getReader();
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value && value.length > 0) {
-              chunks.push(value);
-              received += value.length;
-              if (onProgress && total > 0) {
-                const pct = Math.min(99, Math.max(1, Math.round((received / total) * 100)));
-                onProgress(pct);
-              }
-            }
-          }
-
-          // Check if download completed fully
-          if (received > 50000 && (received >= total * 0.95 || !contentLength)) {
-            break;
-          }
-
-          // If connection ended before full file, retry and resume from received
-          resumeRetries++;
-          if (resumeRetries > MAX_RESUME_RETRIES) {
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 1000 * resumeRetries));
-        } catch (streamErr: any) {
-          resumeRetries++;
-          lastError = streamErr;
-          if (resumeRetries > MAX_RESUME_RETRIES) {
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 1200 * resumeRetries));
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.length > 0) {
+        chunks.push(value);
+        received += value.length;
+        if (onProgress && total > 0) {
+          const pct = Math.min(99, Math.max(1, Math.round((received / total) * 100)));
+          onProgress(pct);
         }
       }
+    }
 
-      if (received > 50000) {
-        // Combine chunks into single ArrayBuffer
-        const combined = new Uint8Array(received);
-        let offset = 0;
-        for (const chunk of chunks) {
-          combined.set(chunk, offset);
-          offset += chunk.length;
-        }
+    if (received > 10000) {
+      const combined = new Uint8Array(received);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      if (onProgress) onProgress(100);
+      return combined.buffer;
+    }
+  } catch (streamErr: any) {
+    console.warn('Streaming fetch failed or stalled, trying direct buffer:', streamErr);
+  }
+
+  // 2. Direct ArrayBuffer Fallback
+  try {
+    if (onProgress) onProgress(75);
+    const directRes = await fetch(proxyUrl, {
+      headers: { Accept: 'application/pdf,*/*' },
+    });
+    if (directRes.ok) {
+      const buf = await directRes.arrayBuffer();
+      if (buf && buf.byteLength > 10000) {
         if (onProgress) onProgress(100);
-        return combined.buffer;
+        return buf;
       }
-    } catch (chunkErr: any) {
-      lastError = chunkErr;
     }
-
-    // Direct whole ArrayBuffer fetch fallback
-    try {
-      const response = await fetch(targetUrl, {
-        headers: { Accept: 'application/pdf,*/*' },
-      });
-      if (response.ok || response.status === 206) {
-        const buffer = await response.arrayBuffer();
-        if (buffer && buffer.byteLength > 50000) {
-          if (onProgress) onProgress(100);
-          return buffer;
-        }
-      }
-    } catch (bufErr: any) {
-      lastError = bufErr;
-    }
+    throw new Error(`سرور جواب: ${directRes.status}`);
+  } catch (fallbackErr: any) {
+    throw new Error(
+      fallbackErr.message?.toLowerCase().includes('fetch')
+        ? 'انٹرنیٹ رابطہ میں سست روی کی وجہ سے تعطل پیش آیا۔ برائے مہربانی "دوبارہ کوشش فرمائیں" دبائیں۔'
+        : fallbackErr.message || 'کتاب لوڈ نہیں ہو سکی۔ برائے مہربانی دوبارہ کوشش فرمائیں۔'
+    );
   }
-
-  const friendlyMsg =
-    lastError && lastError.message?.toLowerCase().includes('fetch')
-      ? 'انٹرنیٹ کنکشن کی سست روی کی وجہ سے رابطہ تعطل کا شکار ہوا۔ براہِ کرم "دوبارہ کوشش فرمائیں" دبائیں، لوڈنگ وہیں سے بحال ہو گی۔'
-      : lastError?.message || 'کتاب لوڈ نہیں ہو سکی۔ برائے مہربانی اپنا انٹرنیٹ چیک فرمائیں یا دوبارہ کوشش کریں۔';
-
-  throw new Error(friendlyMsg);
 }
 
 /**

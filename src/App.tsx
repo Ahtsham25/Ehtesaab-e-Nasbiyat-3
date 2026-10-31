@@ -341,6 +341,13 @@ export default function App() {
     }
   };
 
+  const handleDeleteInternalBook = (volumeId: number) => {
+    const updated = volumes.map((v) =>
+      v.id === volumeId ? { ...v, isDownloaded: false } : v
+    );
+    saveVolumesState(updated);
+  };
+
   const handleDownloadResponseBook = async (book: ResponseBook) => {
     const filename = `${book.titleUrdu.replace(/\s+/g, '_')}.pdf`;
     setDownloadToast({
@@ -735,6 +742,9 @@ export default function App() {
             volumes={volumes}
             onDownload={handleDownload}
             onRead={(volume) => setSelectedVolumeForReading(volume)}
+            onNavigateHome={() => setActiveTab('home')}
+            onDeleteInternalBook={handleDeleteInternalBook}
+            responseBooks={responseBooks}
           />
         )}
 

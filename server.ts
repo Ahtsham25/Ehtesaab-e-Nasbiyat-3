@@ -57,9 +57,9 @@ async function resolveArchivePdf(rawUrl: string): Promise<string> {
     const itemId = match[1];
     const requestedFile = match[2] ? decodeURIComponent(match[2]) : '';
 
-    // If a specific custom Urdu/English filename is requested, try that directly
+    // If a specific custom Urdu/English filename is requested, route via Archive redirect
     if (requestedFile && requestedFile !== `${itemId}.pdf` && requestedFile.endsWith('.pdf')) {
-      const candidate = `https://ia800903.us.archive.org/2/items/${itemId}/${encodeURIComponent(requestedFile)}`;
+      const candidate = `https://archive.org/download/${itemId}/${encodeURIComponent(requestedFile)}`;
       archiveCache.set(trimmed, candidate);
       return candidate;
     }
@@ -68,7 +68,7 @@ async function resolveArchivePdf(rawUrl: string): Promise<string> {
     try {
       const metaRes = await fetch(`https://archive.org/metadata/${itemId}`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        signal: AbortSignal.timeout(3500),
+        signal: AbortSignal.timeout(6000),
       });
 
       if (metaRes.ok) {
@@ -76,7 +76,7 @@ async function resolveArchivePdf(rawUrl: string): Promise<string> {
         const pdfFiles = (meta.files || []).filter((f: any) => f.name && f.name.toLowerCase().endsWith('.pdf'));
         if (pdfFiles.length > 0) {
           const mainPdf = pdfFiles.find((f: any) => !f.name.endsWith('_text.pdf')) || pdfFiles[0];
-          const server = meta.server || 'ia800903.us.archive.org';
+          const server = meta.server || meta.d1 || meta.d2 || 'ia800903.us.archive.org';
           const dir = meta.dir || (`/items/${itemId}`);
           const directUrl = `https://${server}${dir}/${encodeURIComponent(mainPdf.name)}`;
           archiveCache.set(trimmed, directUrl);
@@ -85,8 +85,8 @@ async function resolveArchivePdf(rawUrl: string): Promise<string> {
       }
     } catch {}
 
-    // Fallback: fast ia800903 node
-    const candidate = `https://ia800903.us.archive.org/2/items/${itemId}/${requestedFile || `${itemId}.pdf`}`;
+    // Universal Archive redirect fallback (never 404s due to node mis-spec)
+    const candidate = `https://archive.org/download/${itemId}/${encodeURIComponent(requestedFile || `${itemId}.pdf`)}`;
     return candidate;
   }
 
@@ -102,6 +102,7 @@ async function startServer() {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
     next();
   });
 
@@ -285,12 +286,24 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
 
-    // Pre-cache Volume 1 and Volume 4 asynchronously into memory so reading is instant
+    // Pre-cache Volumes asynchronously into memory so reading is instant
     setTimeout(async () => {
       const preloadIds = [
         'ehtesabe-nasbiat-by-allah-wasaya-deobandi-1',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-2',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-3',
         'ehtesabe-nasbiat-by-allah-wasaya-deobandi-4',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-5',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-6',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-7',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-8',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-9',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-10',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-11',
+        'ehtesabe-nasbiat-by-allah-wasaya-deobandi-12',
         '20261003_20261003_2332',
+        '20261003_20261003_0649',
+        '20261009_20261009_2214',
       ];
       for (const id of preloadIds) {
         try {
