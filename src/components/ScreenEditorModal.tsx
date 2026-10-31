@@ -24,7 +24,9 @@ import {
   AlignCenter,
   AlignRight,
   Bold,
-  Sliders
+  Sliders,
+  Eraser,
+  Sparkles
 } from 'lucide-react';
 import { VolumeData } from '../types/book';
 import { DEFAULT_VOLUMES } from '../data/defaultVolumes';
@@ -74,15 +76,39 @@ const SHEET_WIDTH = 680;
 const PAGE_WIDTH = 295;
 const PAGE_HEIGHT = 410;
 
-const COLOR_OPTIONS = [
+// Horizontally scrollable color lists
+const HIGHLIGHT_COLOR_LIST = [
   { id: 'yellow', value: '#ffeb3b', label: 'پیلا' },
   { id: 'green', value: '#00e676', label: 'سبز' },
   { id: 'pink', value: '#ff2d55', label: 'گلابی' },
-  { id: 'blue', value: '#0084ff', label: 'نیلا' },
+  { id: 'cyan', value: '#00e5ff', label: 'ہلکا نیلا' },
   { id: 'gold', value: '#f59e0b', label: 'سنہری' },
+  { id: 'orange', value: '#ff9100', label: 'نارنجی' },
+  { id: 'purple', value: '#b388ff', label: 'جامنی' },
+  { id: 'white', value: '#ffffff', label: 'سفید' },
+];
+
+const TEXT_COLOR_LIST = [
+  { id: 'emerald', value: '#065f46', label: 'گہرا سبز' },
+  { id: 'gold', value: '#d97706', label: 'سنہری' },
+  { id: 'red', value: '#dc2626', label: 'سرخ' },
+  { id: 'black', value: '#1c1917', label: 'سیاہ' },
+  { id: 'white', value: '#ffffff', label: 'سفید' },
+  { id: 'blue', value: '#2563eb', label: 'نیلا' },
+  { id: 'purple', value: '#7c3aed', label: 'جامنی' },
+  { id: 'teal', value: '#0d9488', label: 'فیروزی' },
+];
+
+const SHAPE_COLOR_LIST = [
+  { id: 'red', value: '#dc2626', label: 'سرخ' },
+  { id: 'gold', value: '#f59e0b', label: 'سنہری' },
+  { id: 'green', value: '#10b981', label: 'سبز' },
+  { id: 'blue', value: '#3b82f6', label: 'نیلا' },
   { id: 'black', value: '#1c1917', label: 'سیاہ' },
   { id: 'white', value: '#ffffff', label: 'سفید' },
 ];
+
+export type EditorToolMode = 'text' | 'highlight' | 'box' | 'line' | 'eraser';
 
 export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   volume: initialVolume,
@@ -108,16 +134,17 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   // Cached active PDF document proxy
   const docProxyRef = useRef<any>(pdfDoc || null);
 
-  // Active Tool: 'highlight' | 'box' | 'line' | 'text'
-  const [activeTool, setActiveTool] = useState<'highlight' | 'box' | 'line' | 'text'>('text');
+  // Active Tool: 'text' | 'highlight' | 'box' | 'line' | 'eraser'
+  const [activeTool, setActiveTool] = useState<EditorToolMode>('text');
   const [selectedColor, setSelectedColor] = useState<string>('#ffeb3b');
+  const [shapeWidth, setShapeWidth] = useState<number>(3); // 2, 4, 6
 
   // Dedicated Highlighter Opacity & Thickness Controls
-  const [highlighterOpacity, setHighlighterOpacity] = useState<number>(40); // 10% - 100%
-  const [highlighterWidth, setHighlighterWidth] = useState<number>(24); // 12, 24, 36
+  const [highlighterOpacity, setHighlighterOpacity] = useState<number>(40); // 20% - 100%
+  const [highlighterWidth, setHighlighterWidth] = useState<number>(24); // 14, 24, 36
 
   // Canvas Top Space (for custom text headers)
-  const [topSpacePx, setTopSpacePx] = useState<number>(55); // 15, 55, 90, 130
+  const [topSpacePx, setTopSpacePx] = useState<number>(55); // 15, 55, 95
   const bottomSpacePx = 20;
   const totalSheetHeight = PAGE_HEIGHT + topSpacePx + bottomSpacePx;
 
@@ -396,10 +423,41 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     };
   };
 
-  // Drawing event handlers
+  // Stroke removal helper
+  const eraseStrokeAt = (pt: Point) => {
+    setStrokes((prev) => {
+      const remaining = prev.filter((s) => {
+        if (s.boxRect) {
+          const b = s.boxRect;
+          const minX = Math.min(b.x, b.x + b.w) - 16;
+          const maxX = Math.max(b.x, b.x + b.w) + 16;
+          const minY = Math.min(b.y, b.y + b.h) - 16;
+          const maxY = Math.max(b.y, b.y + b.h) + 16;
+          return !(pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY);
+        }
+        if (s.points) {
+          return !s.points.some((p) => Math.hypot(p.x - pt.x, p.y - pt.y) < 24);
+        }
+        return true;
+      });
+      if (remaining.length !== prev.length) {
+        showToast('نشان مٹا دیا گیا');
+        return remaining;
+      }
+      return prev;
+    });
+  };
+
+  // Drawing and Erasing event handlers
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     if (activeTool === 'text') return;
     const pt = getSheetCoords(e);
+
+    if (activeTool === 'eraser') {
+      setIsDrawing(true);
+      eraseStrokeAt(pt);
+      return;
+    }
 
     setIsDrawing(true);
     setRedoStrokes([]);
@@ -420,7 +478,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         points: [pt],
         color: selectedColor,
         opacity: 100,
-        width: 3,
+        width: shapeWidth,
       });
     } else if (activeTool === 'box') {
       setActiveStroke({
@@ -429,14 +487,21 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         boxRect: { x: pt.x, y: pt.y, w: 0, h: 0 },
         color: selectedColor,
         opacity: 100,
-        width: 3,
+        width: shapeWidth,
       });
     }
   };
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing || !activeStroke) return;
+    if (!isDrawing) return;
     const pt = getSheetCoords(e);
+
+    if (activeTool === 'eraser') {
+      eraseStrokeAt(pt);
+      return;
+    }
+
+    if (!activeStroke) return;
 
     if (activeStroke.tool === 'highlight' || activeStroke.tool === 'line') {
       setActiveStroke((prev) =>
@@ -452,6 +517,10 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   };
 
   const handlePointerUp = () => {
+    if (activeTool === 'eraser') {
+      setIsDrawing(false);
+      return;
+    }
     if (isDrawing && activeStroke) {
       setStrokes((prev) => [...prev, activeStroke]);
       setActiveStroke(null);
@@ -813,58 +882,58 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
       onMouseUp={handleSheetPointerUp}
       onTouchEnd={handleSheetPointerUp}
     >
-      {/* 1. TOP HEADER: Back + Volume & Page Switcher + Save Image Button */}
-      <header className="h-14 bg-stone-900 border-b border-stone-800 px-3 sm:px-4 flex items-center justify-between z-30 shrink-0">
-        <div className="flex items-center gap-2">
-          {/* Back Button */}
+      {/* 1. TOP HEADER: Back + Volume/Page Info + Save Button */}
+      <header className="h-12 bg-stone-900 border-b border-stone-800 px-2 sm:px-4 flex items-center justify-between z-30 shrink-0 gap-2">
+        {/* Back Button */}
+        <button
+          onClick={onClose}
+          className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 font-bold text-xs cursor-pointer transition-colors shrink-0"
+          title="بند کریں اور واپس جائیں"
+        >
+          <ArrowRight className="w-3.5 h-3.5 text-emerald-400 stroke-[2.5]" />
+          <span className="font-nastaliq text-xs">واپس</span>
+        </button>
+
+        {/* Center: Volume Selector Dropdown + Page Stepper */}
+        <div className="flex items-center gap-1.5 bg-stone-950 border border-stone-800 rounded-xl px-2 py-1 text-xs shrink-0 relative">
           <button
-            onClick={onClose}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 font-bold text-xs sm:text-sm cursor-pointer transition-colors"
-            title="بند کریں اور واپس جائیں"
+            onClick={() => setShowVolumePicker(!showVolumePicker)}
+            className="text-emerald-400 font-bold hover:text-emerald-300 font-nastaliq flex items-center gap-1 cursor-pointer text-xs"
           >
-            <ArrowRight className="w-4 h-4 text-emerald-400 stroke-[2.5]" />
-            <span className="font-nastaliq text-sm">واپس</span>
+            <span>جلد {activeVolume.volumeNumber}</span>
+            <span className="text-[10px] text-stone-500 font-sans">▼</span>
           </button>
 
-          {/* Volume Dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setShowVolumePicker(!showVolumePicker)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-950/80 text-emerald-300 border border-emerald-600/50 text-xs font-bold cursor-pointer hover:bg-emerald-900/80"
-            >
-              <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
-              <span>جلد {activeVolume.volumeNumber} ({activeVolume.volumeTitleUrdu})</span>
-            </button>
-
-            {showVolumePicker && (
-              <div className="absolute top-full left-0 mt-1 w-64 bg-stone-900 border border-stone-700 rounded-2xl shadow-2xl p-2 z-50 max-h-72 overflow-y-auto">
-                <div className="text-[11px] font-bold text-stone-400 px-2 py-1 border-b border-stone-800 mb-1">
-                  جلد منتخب فرمائیں:
-                </div>
-                {DEFAULT_VOLUMES.map((vol) => (
-                  <button
-                    key={vol.id}
-                    onClick={() => {
-                      setActiveVolume(vol);
-                      setShowVolumePicker(false);
-                      if (onVolumeChange) onVolumeChange(vol);
-                    }}
-                    className={`w-full text-right px-3 py-1.5 rounded-xl text-xs transition-colors flex items-center justify-between ${
-                      vol.id === activeVolume.id
-                        ? 'bg-emerald-600 text-stone-950 font-bold'
-                        : 'text-stone-300 hover:bg-stone-800'
-                    }`}
-                  >
-                    <span>{vol.volumeTitleUrdu}</span>
-                    <span className="font-mono text-[10px] opacity-75">جلد {vol.volumeNumber}</span>
-                  </button>
-                ))}
+          {showVolumePicker && (
+            <div className="absolute top-full left-0 mt-1 w-60 bg-stone-900 border border-stone-700 rounded-2xl shadow-2xl p-2 z-50 max-h-72 overflow-y-auto">
+              <div className="text-[11px] font-bold text-stone-400 px-2 py-1 border-b border-stone-800 mb-1">
+                جلد منتخب فرمائیں:
               </div>
-            )}
-          </div>
+              {DEFAULT_VOLUMES.map((vol) => (
+                <button
+                  key={vol.id}
+                  onClick={() => {
+                    setActiveVolume(vol);
+                    setShowVolumePicker(false);
+                    if (onVolumeChange) onVolumeChange(vol);
+                  }}
+                  className={`w-full text-right px-3 py-1.5 rounded-xl text-xs transition-colors flex items-center justify-between ${
+                    vol.id === activeVolume.id
+                      ? 'bg-emerald-600 text-stone-950 font-bold'
+                      : 'text-stone-300 hover:bg-stone-800'
+                  }`}
+                >
+                  <span>{vol.volumeTitleUrdu}</span>
+                  <span className="font-mono text-[10px] opacity-75">جلد {vol.volumeNumber}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <span className="text-stone-700">|</span>
 
           {/* Page Stepper */}
-          <div className="flex items-center gap-1 bg-stone-950 border border-stone-800 rounded-xl px-2 py-1">
+          <div className="flex items-center gap-0.5">
             <button
               onClick={() => {
                 const nextP = Math.max(1, currentPage - 1);
@@ -872,16 +941,14 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                 if (onPageChange) onPageChange(nextP);
               }}
               disabled={currentPage <= 1}
-              className="p-1 text-stone-400 hover:text-white disabled:opacity-30 cursor-pointer"
+              className="p-0.5 text-stone-400 hover:text-white disabled:opacity-30 cursor-pointer"
               title="پچھلا صفحہ"
             >
-              <ChevronRight className="w-4 h-4" />
+              <ChevronRight className="w-3.5 h-3.5" />
             </button>
-
-            <span className="text-xs text-stone-300 font-mono font-bold px-1">
-              ص {currentPage} / {activeVolume.pageCount || 476}
+            <span className="text-[11px] text-stone-200 font-mono font-bold px-0.5">
+              ص {currentPage}
             </span>
-
             <button
               onClick={() => {
                 const nextP = Math.min(activeVolume.pageCount || 476, currentPage + 1);
@@ -889,110 +956,256 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                 if (onPageChange) onPageChange(nextP);
               }}
               disabled={currentPage >= (activeVolume.pageCount || 476)}
-              className="p-1 text-stone-400 hover:text-white disabled:opacity-30 cursor-pointer"
+              className="p-0.5 text-stone-400 hover:text-white disabled:opacity-30 cursor-pointer"
               title="اگلا صفحہ"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <ChevronLeft className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        {/* Right: Export Button */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportImage}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-stone-950 font-bold text-xs sm:text-sm shadow-xl cursor-pointer transition-all active:scale-95"
-            title="سند و حوالہ تصویر محفوظ کریں"
-          >
-            <Download className="w-4 h-4 stroke-[2.5]" />
-            <span className="font-nastaliq text-sm sm:text-base">سند محفوظ کریں</span>
-          </button>
-        </div>
+        {/* Right: Save Button */}
+        <button
+          onClick={handleExportImage}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-stone-950 font-bold text-xs shadow-md cursor-pointer shrink-0 transition-all active:scale-95 whitespace-nowrap"
+          title="سند و حوالہ تصویر محفوظ کریں"
+        >
+          <Download className="w-3.5 h-3.5 stroke-[2.5]" />
+          <span className="font-nastaliq text-xs">سند محفوظ کریں</span>
+        </button>
       </header>
 
-      {/* 2. PRIMARY TOOLBAR: Tool Selectors (Highlighter / Box / Line / Text) + Undo/Redo */}
-      <div className="bg-stone-900 border-b border-stone-800 px-3 py-2 flex flex-wrap items-center justify-between gap-2 z-20 text-xs shrink-0">
-        <div className="flex items-center gap-1.5">
-          {/* Highlighter */}
-          <button
-            onClick={() => setActiveTool('highlight')}
-            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
-              activeTool === 'highlight'
-                ? 'bg-amber-500 text-stone-950 font-bold shadow-md'
-                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
-            }`}
-          >
-            <Highlighter className="w-4 h-4" />
-            <span>ہائی لائٹر</span>
-          </button>
-
-          {/* Box */}
-          <button
-            onClick={() => setActiveTool('box')}
-            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
-              activeTool === 'box'
-                ? 'bg-amber-500 text-stone-950 font-bold shadow-md'
-                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
-            }`}
-          >
-            <Square className="w-4 h-4" />
-            <span>باکس</span>
-          </button>
-
-          {/* Line */}
-          <button
-            onClick={() => setActiveTool('line')}
-            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
-              activeTool === 'line'
-                ? 'bg-amber-500 text-stone-950 font-bold shadow-md'
-                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
-            }`}
-          >
-            <Minus className="w-4 h-4" />
-            <span>لائن</span>
-          </button>
-
+      {/* 2. PRIMARY TOOL TABS: صرف بنیادی ٹولز (ٹیکسٹ، ہائی لائٹر، باکس/لکیر، اریزر) */}
+      <div className="bg-stone-900 border-b border-stone-800 px-2 py-1.5 flex items-center justify-between gap-1 z-20 shrink-0">
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
           {/* Text Tool */}
           <button
             onClick={() => {
               setActiveTool('text');
-              handleAddNewText();
+              if (textList.length === 0) {
+                handleAddNewText();
+              } else if (!selectedTextId) {
+                setSelectedTextId(textList[0].id);
+              }
             }}
-            className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans ${
+            className={`px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans text-xs whitespace-nowrap ${
               activeTool === 'text'
-                ? 'bg-emerald-600 text-white font-bold shadow-md'
+                ? 'bg-emerald-600 text-white font-bold shadow-md ring-1 ring-emerald-400'
                 : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
             }`}
           >
-            <Type className="w-4 h-4" />
-            <span>نئی تحریر شامل کریں</span>
+            <Type className="w-3.5 h-3.5" />
+            <span>ٹیکسٹ (تحریر)</span>
           </button>
 
-          {/* Undo / Redo */}
-          <div className="flex items-center gap-1 bg-stone-950 border border-stone-800 rounded-xl p-0.5 ml-1">
-            <button
-              onClick={handleUndo}
-              disabled={strokes.length === 0}
-              className="p-1.5 text-stone-400 hover:text-white disabled:opacity-30 rounded-lg cursor-pointer"
-              title="Undo"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={handleRedo}
-              disabled={redoStrokes.length === 0}
-              className="p-1.5 text-stone-400 hover:text-white disabled:opacity-30 rounded-lg cursor-pointer"
-              title="Redo"
-            >
-              <RotateCw className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          {/* Highlighter Tool */}
+          <button
+            onClick={() => setActiveTool('highlight')}
+            className={`px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans text-xs whitespace-nowrap ${
+              activeTool === 'highlight'
+                ? 'bg-amber-500 text-stone-950 font-bold shadow-md ring-1 ring-amber-300'
+                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+            }`}
+          >
+            <Highlighter className="w-3.5 h-3.5" />
+            <span>ہائی لائٹر</span>
+          </button>
+
+          {/* Box / Line Tool */}
+          <button
+            onClick={() => {
+              if (activeTool !== 'box' && activeTool !== 'line') {
+                setActiveTool('box');
+              }
+            }}
+            className={`px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans text-xs whitespace-nowrap ${
+              activeTool === 'box' || activeTool === 'line'
+                ? 'bg-sky-600 text-white font-bold shadow-md ring-1 ring-sky-400'
+                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+            }`}
+          >
+            <Square className="w-3.5 h-3.5" />
+            <span>باکس / لکیر</span>
+          </button>
+
+          {/* Eraser Tool */}
+          <button
+            onClick={() => setActiveTool('eraser')}
+            className={`px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer font-sans text-xs whitespace-nowrap ${
+              activeTool === 'eraser'
+                ? 'bg-rose-600 text-white font-bold shadow-md ring-1 ring-rose-400'
+                : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+            }`}
+          >
+            <Eraser className="w-3.5 h-3.5" />
+            <span>اریزر (مٹائیں)</span>
+          </button>
         </div>
 
-        {/* Top Space Setting for Text Area */}
-        <div className="flex items-center gap-1.5 bg-stone-950 px-2 py-1 rounded-xl border border-stone-800">
-          <span className="text-[11px] text-stone-400 font-sans">اوپر تحریر کی جگہ:</span>
-          <div className="flex items-center gap-1">
+        {/* Undo / Redo */}
+        <div className="flex items-center gap-0.5 bg-stone-950 border border-stone-800 rounded-xl p-0.5 shrink-0">
+          <button
+            onClick={handleUndo}
+            disabled={strokes.length === 0}
+            className="p-1.5 text-stone-400 hover:text-white disabled:opacity-25 rounded-lg cursor-pointer"
+            title="واپس (Undo)"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={redoStrokes.length === 0}
+            className="p-1.5 text-stone-400 hover:text-white disabled:opacity-25 rounded-lg cursor-pointer"
+            title="دوبارہ (Redo)"
+          >
+            <RotateCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* 3. CONTEXTUAL SUB-TOOLBAR: صرف اور صرف منتخب ٹول کے فردر آپشنز */}
+      {/* CASE A: TEXT TOOL OPTIONS */}
+      {activeTool === 'text' && (
+        <div className="bg-stone-900/95 border-b border-emerald-900/40 px-2 py-1.5 flex items-center gap-2 text-xs z-20 shrink-0 overflow-x-auto no-scrollbar scroll-smooth">
+          {/* Add Text Button */}
+          <button
+            onClick={handleAddNewText}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer shadow shrink-0 whitespace-nowrap"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>نئی تحریر</span>
+          </button>
+
+          {selectedTextItem && (
+            <>
+              {/* Edit Text Button */}
+              <button
+                onClick={() => {
+                  setEditingTextItem(selectedTextItem);
+                  setEditTextValue(selectedTextItem.text);
+                }}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-stone-800 hover:bg-stone-700 text-emerald-400 font-bold border border-emerald-600/40 text-xs cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span>تحریر بدلیں</span>
+              </button>
+
+              {/* Font Size (+/-) */}
+              <div className="flex items-center gap-1 bg-stone-950 px-2 py-1 rounded-xl border border-stone-800 shrink-0">
+                <button
+                  onClick={() => updateSelectedTextFontSize(-2)}
+                  className="text-stone-400 hover:text-white font-bold px-1"
+                  title="چھوٹا کریں"
+                >
+                  A-
+                </button>
+                <span className="font-mono text-emerald-400 font-bold text-[11px]">
+                  {selectedTextItem.fontSize}
+                </span>
+                <button
+                  onClick={() => updateSelectedTextFontSize(2)}
+                  className="text-stone-400 hover:text-white font-bold px-1"
+                  title="بڑا کریں"
+                >
+                  A+
+                </button>
+              </div>
+
+              {/* Bold Toggle */}
+              <button
+                onClick={toggleSelectedTextBold}
+                className={`p-1.5 rounded-xl border text-xs cursor-pointer shrink-0 ${
+                  selectedTextItem.isBold
+                    ? 'bg-amber-500 text-stone-950 font-bold border-amber-400'
+                    : 'bg-stone-950 text-stone-400 border-stone-800'
+                }`}
+                title="بولڈ"
+              >
+                <Bold className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Alignment */}
+              <div className="flex items-center bg-stone-950 rounded-xl border border-stone-800 p-0.5 shrink-0">
+                <button
+                  onClick={() => updateSelectedTextAlign('right')}
+                  className={`p-1 rounded-lg ${selectedTextItem.textAlign === 'right' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                  title="دائیں"
+                >
+                  <AlignRight className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => updateSelectedTextAlign('center')}
+                  className={`p-1 rounded-lg ${selectedTextItem.textAlign === 'center' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                  title="درمیان"
+                >
+                  <AlignCenter className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => updateSelectedTextAlign('left')}
+                  className={`p-1 rounded-lg ${selectedTextItem.textAlign === 'left' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
+                  title="بائیں"
+                >
+                  <AlignLeft className="w-3 h-3" />
+                </button>
+              </div>
+
+              {/* SCROLLABLE COLOR PALETTE FOR TEXT */}
+              <div className="flex items-center gap-1.5 bg-stone-950 px-2 py-1 rounded-xl border border-stone-800 shrink-0">
+                <span className="text-[10px] text-stone-400 font-sans whitespace-nowrap">رنگ:</span>
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar max-w-[130px] sm:max-w-none py-0.5">
+                  {TEXT_COLOR_LIST.map((col) => (
+                    <button
+                      key={col.id}
+                      onClick={() => updateSelectedTextColor(col.value)}
+                      style={{ backgroundColor: col.value }}
+                      className={`w-5 h-5 rounded-full border-2 transition-transform cursor-pointer shrink-0 ${
+                        selectedTextItem.color === col.value
+                          ? 'border-white scale-110 shadow'
+                          : 'border-stone-700 hover:border-stone-500'
+                      }`}
+                      title={col.label}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Background Color Presets */}
+              <div className="flex items-center gap-1 bg-stone-950 px-2 py-1 rounded-xl border border-stone-800 shrink-0">
+                <span className="text-[10px] text-stone-400 font-sans whitespace-nowrap">پس منظر:</span>
+                {[
+                  { label: 'سفید', val: '#ffffffdd' },
+                  { label: 'سنہری', val: '#fef3c7dd' },
+                  { label: 'شفاف', val: 'transparent' },
+                  { label: 'سیاہ', val: '#000000bb' },
+                ].map((bg) => (
+                  <button
+                    key={bg.label}
+                    onClick={() => updateSelectedTextBg(bg.val)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer whitespace-nowrap ${
+                      selectedTextItem.bgColor === bg.val
+                        ? 'bg-emerald-600 text-white font-bold'
+                        : 'text-stone-400 hover:text-stone-200'
+                    }`}
+                  >
+                    {bg.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Delete Text */}
+              <button
+                onClick={deleteSelectedText}
+                className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 rounded-xl cursor-pointer shrink-0 border border-rose-900/40"
+                title="تحریر مٹائیں"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+
+          {/* Top Space Setting for Text Area */}
+          <div className="flex items-center gap-1 bg-stone-950 px-2 py-1 rounded-xl border border-stone-800 shrink-0 mr-auto">
+            <span className="text-[10px] text-stone-400 font-sans whitespace-nowrap">اوپر جگہ:</span>
             {[
               { label: 'عام', px: 55 },
               { label: 'کشادہ', px: 95 },
@@ -1001,7 +1214,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
               <button
                 key={sp.px}
                 onClick={() => setTopSpacePx(sp.px)}
-                className={`px-2 py-0.5 rounded-lg text-[10px] font-sans transition-colors cursor-pointer ${
+                className={`px-1.5 py-0.5 rounded text-[10px] font-sans transition-colors cursor-pointer whitespace-nowrap ${
                   topSpacePx === sp.px
                     ? 'bg-emerald-600 text-white font-bold'
                     : 'text-stone-400 hover:text-stone-200'
@@ -1012,23 +1225,22 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
             ))}
           </div>
         </div>
-      </div>
+      )}
 
-      {/* 3. DEDICATED TOOL CONFIGURATION STRIP */}
-      {/* If Highlighter or Drawing Tool Active */}
-      {(activeTool === 'highlight' || activeTool === 'box' || activeTool === 'line') && (
-        <div className="bg-stone-900/90 border-b border-stone-800 px-3 py-1.5 flex flex-wrap items-center justify-between gap-3 text-xs z-20 shrink-0">
-          {/* Color Palette */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-stone-400 font-sans">رنگ:</span>
-            <div className="flex items-center gap-1">
-              {COLOR_OPTIONS.slice(0, 5).map((col) => (
+      {/* CASE B: HIGHLIGHTER OPTIONS */}
+      {activeTool === 'highlight' && (
+        <div className="bg-stone-900/95 border-b border-amber-900/40 px-2 py-1.5 flex items-center gap-2 text-xs z-20 shrink-0 overflow-x-auto no-scrollbar scroll-smooth">
+          {/* SCROLLABLE COLOR PALETTE FOR HIGHLIGHTER */}
+          <div className="flex items-center gap-1.5 bg-stone-950 px-2.5 py-1 rounded-xl border border-stone-800 shrink-0">
+            <span className="text-[11px] text-stone-400 font-sans whitespace-nowrap">رنگ (سکرول کریں):</span>
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5 max-w-[140px] sm:max-w-none">
+              {HIGHLIGHT_COLOR_LIST.map((col) => (
                 <button
                   key={col.id}
                   onClick={() => setSelectedColor(col.value)}
                   style={{ backgroundColor: col.value }}
-                  className={`w-6 h-6 rounded-full border-2 transition-transform cursor-pointer ${
-                    selectedColor === col.value ? 'border-white scale-110 shadow' : 'border-stone-700'
+                  className={`w-6 h-6 rounded-full border-2 transition-transform cursor-pointer shrink-0 ${
+                    selectedColor === col.value ? 'border-white scale-110 shadow-lg' : 'border-stone-700'
                   }`}
                   title={col.label}
                 />
@@ -1036,171 +1248,160 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
             </div>
           </div>
 
-          {/* DEDICATED HIGHLIGHTER OPACITY PERCENTAGE SELECTOR (User Requirement 3) */}
-          {activeTool === 'highlight' && (
-            <div className="flex items-center gap-2 bg-stone-950 px-3 py-1 rounded-2xl border border-amber-500/40">
-              <span className="text-[11px] text-amber-300 font-bold font-sans">
-                ہائی لائٹ شفافیت (Opacity):
-              </span>
-              <div className="flex items-center gap-1">
-                {[20, 40, 60, 80, 100].map((pct) => (
-                  <button
-                    key={pct}
-                    onClick={() => setHighlighterOpacity(pct)}
-                    className={`px-2 py-0.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
-                      highlighterOpacity === pct
-                        ? 'bg-amber-500 text-stone-950 shadow'
-                        : 'text-stone-400 hover:text-white bg-stone-900'
-                    }`}
-                  >
-                    {pct}%
-                  </button>
-                ))}
-              </div>
-
-              {/* Stroke Width / Thickness */}
-              <div className="flex items-center gap-1 border-r border-stone-800 pr-2 mr-1">
-                <span className="text-[11px] text-stone-400">موٹائی:</span>
-                {[
-                  { label: 'باریک', w: 14 },
-                  { label: 'درمیانہ', w: 24 },
-                  { label: 'چوڑا', w: 36 },
-                ].map((th) => (
-                  <button
-                    key={th.w}
-                    onClick={() => setHighlighterWidth(th.w)}
-                    className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer ${
-                      highlighterWidth === th.w ? 'bg-emerald-600 text-white' : 'text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    {th.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* If Text Item is Selected: Stretch & Edit Toolbar */}
-      {selectedTextItem && (
-        <div className="bg-stone-900/95 border-b border-emerald-600/50 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs z-20 shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-emerald-400 font-bold font-sans">
-              منتخب تحریر (دونوں طرف سے سٹریچ کریں):
+          {/* HIGHLIGHTER OPACITY PERCENTAGE SELECTOR */}
+          <div className="flex items-center gap-1.5 bg-stone-950 px-2.5 py-1 rounded-xl border border-amber-500/40 shrink-0">
+            <span className="text-[11px] text-amber-300 font-bold font-sans whitespace-nowrap">
+              شفافیت (Opacity):
             </span>
-
-            {/* Edit Text Button */}
-            <button
-              onClick={() => {
-                setEditingTextItem(selectedTextItem);
-                setEditTextValue(selectedTextItem.text);
-              }}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer shadow"
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>تحریر بدلیں</span>
-            </button>
-
-            {/* Font Size (+/-) */}
-            <div className="flex items-center gap-1 bg-stone-950 px-2 py-0.5 rounded-lg border border-stone-800 text-[11px]">
-              <button
-                onClick={() => updateSelectedTextFontSize(-2)}
-                className="text-stone-400 hover:text-white font-bold px-1"
-                title="فونٹ چھوٹا کریں"
-              >
-                A-
-              </button>
-              <span className="font-mono text-emerald-400 font-bold">{selectedTextItem.fontSize}</span>
-              <button
-                onClick={() => updateSelectedTextFontSize(2)}
-                className="text-stone-400 hover:text-white font-bold px-1"
-                title="فونٹ بڑا کریں"
-              >
-                A+
-              </button>
-            </div>
-
-            {/* Bold Toggle */}
-            <button
-              onClick={toggleSelectedTextBold}
-              className={`p-1.5 rounded-lg border text-xs cursor-pointer ${
-                selectedTextItem.isBold
-                  ? 'bg-amber-500 text-stone-950 font-bold border-amber-400'
-                  : 'bg-stone-950 text-stone-400 border-stone-800'
-              }`}
-              title="بولڈ کریں"
-            >
-              <Bold className="w-3.5 h-3.5" />
-            </button>
-
-            {/* Alignment */}
-            <div className="flex items-center bg-stone-950 rounded-lg border border-stone-800 p-0.5">
-              <button
-                onClick={() => updateSelectedTextAlign('right')}
-                className={`p-1 rounded ${selectedTextItem.textAlign === 'right' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
-                title="دائیں سیدھ"
-              >
-                <AlignRight className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => updateSelectedTextAlign('center')}
-                className={`p-1 rounded ${selectedTextItem.textAlign === 'center' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
-                title="درمیان"
-              >
-                <AlignCenter className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => updateSelectedTextAlign('left')}
-                className={`p-1 rounded ${selectedTextItem.textAlign === 'left' ? 'bg-emerald-600 text-white' : 'text-stone-400'}`}
-                title="بائیں سیدھ"
-              >
-                <AlignLeft className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {/* Color switcher */}
             <div className="flex items-center gap-1">
-              {['#065f46', '#f59e0b', '#1c1917', '#dc2626', '#ffffff'].map((col) => (
+              {[20, 40, 60, 80, 100].map((pct) => (
                 <button
-                  key={col}
-                  onClick={() => updateSelectedTextColor(col)}
-                  style={{ backgroundColor: col }}
-                  className="w-5 h-5 rounded-full border border-white/50 cursor-pointer"
-                />
-              ))}
-            </div>
-
-            {/* Background switcher */}
-            <div className="flex items-center gap-1 border-r border-stone-800 pr-2">
-              <span className="text-[10px] text-stone-400">بیک گراؤنڈ:</span>
-              {[
-                { label: 'سفید', val: '#ffffffdd' },
-                { label: 'سنہری', val: '#fef3c7dd' },
-                { label: 'شفاف', val: 'transparent' },
-                { label: 'سیاہ', val: '#000000bb' },
-              ].map((bg) => (
-                <button
-                  key={bg.label}
-                  onClick={() => updateSelectedTextBg(bg.val)}
-                  className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer ${
-                    selectedTextItem.bgColor === bg.val ? 'bg-amber-500 text-stone-950 font-bold' : 'text-stone-400'
+                  key={pct}
+                  onClick={() => setHighlighterOpacity(pct)}
+                  className={`px-2 py-0.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer whitespace-nowrap ${
+                    highlighterOpacity === pct
+                      ? 'bg-amber-500 text-stone-950 shadow'
+                      : 'text-stone-400 hover:text-white bg-stone-900'
                   }`}
                 >
-                  {bg.label}
+                  {pct}%
                 </button>
               ))}
             </div>
+          </div>
 
-            {/* Delete button */}
+          {/* HIGHLIGHTER STROKE THICKNESS */}
+          <div className="flex items-center gap-1 bg-stone-950 px-2.5 py-1 rounded-xl border border-stone-800 shrink-0">
+            <span className="text-[11px] text-stone-400 whitespace-nowrap">موٹائی:</span>
+            {[
+              { label: 'باریک', w: 14 },
+              { label: 'درمیانہ', w: 24 },
+              { label: 'چوڑا', w: 36 },
+            ].map((th) => (
+              <button
+                key={th.w}
+                onClick={() => setHighlighterWidth(th.w)}
+                className={`px-2 py-0.5 rounded-lg text-xs cursor-pointer whitespace-nowrap ${
+                  highlighterWidth === th.w ? 'bg-amber-500 text-stone-950 font-bold' : 'text-stone-400 hover:text-white'
+                }`}
+              >
+                {th.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* CASE C: BOX & LINE (SHAPES) OPTIONS */}
+      {(activeTool === 'box' || activeTool === 'line') && (
+        <div className="bg-stone-900/95 border-b border-sky-900/40 px-2 py-1.5 flex items-center gap-2 text-xs z-20 shrink-0 overflow-x-auto no-scrollbar scroll-smooth">
+          {/* Switch between Box and Line */}
+          <div className="flex items-center bg-stone-950 rounded-xl border border-stone-800 p-0.5 shrink-0">
             <button
-              onClick={deleteSelectedText}
-              className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 rounded-lg cursor-pointer"
-              title="تحریر مٹائیں"
+              onClick={() => setActiveTool('box')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-sans cursor-pointer whitespace-nowrap ${
+                activeTool === 'box' ? 'bg-sky-600 text-white font-bold' : 'text-stone-400 hover:text-white'
+              }`}
             >
-              <Trash2 className="w-4 h-4" />
+              <Square className="w-3.5 h-3.5" />
+              <span>مستطیل باکس</span>
+            </button>
+            <button
+              onClick={() => setActiveTool('line')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-sans cursor-pointer whitespace-nowrap ${
+                activeTool === 'line' ? 'bg-sky-600 text-white font-bold' : 'text-stone-400 hover:text-white'
+              }`}
+            >
+              <Minus className="w-3.5 h-3.5" />
+              <span>سیدھی لکیر</span>
             </button>
           </div>
+
+          {/* SCROLLABLE COLOR PALETTE FOR SHAPES */}
+          <div className="flex items-center gap-1.5 bg-stone-950 px-2.5 py-1 rounded-xl border border-stone-800 shrink-0">
+            <span className="text-[11px] text-stone-400 font-sans whitespace-nowrap">رنگ:</span>
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5 max-w-[140px] sm:max-w-none">
+              {SHAPE_COLOR_LIST.map((col) => (
+                <button
+                  key={col.id}
+                  onClick={() => setSelectedColor(col.value)}
+                  style={{ backgroundColor: col.value }}
+                  className={`w-6 h-6 rounded-full border-2 transition-transform cursor-pointer shrink-0 ${
+                    selectedColor === col.value ? 'border-white scale-110 shadow-lg' : 'border-stone-700'
+                  }`}
+                  title={col.label}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* SHAPE BORDER WIDTH */}
+          <div className="flex items-center gap-1 bg-stone-950 px-2 py-1 rounded-xl border border-stone-800 shrink-0">
+            <span className="text-[11px] text-stone-400 whitespace-nowrap">موٹائی:</span>
+            {[
+              { label: 'باریک', w: 2 },
+              { label: 'درمیانی', w: 4 },
+              { label: 'موٹی', w: 6 },
+            ].map((th) => (
+              <button
+                key={th.w}
+                onClick={() => setShapeWidth(th.w)}
+                className={`px-2 py-0.5 rounded-lg text-xs cursor-pointer whitespace-nowrap ${
+                  shapeWidth === th.w ? 'bg-sky-600 text-white font-bold' : 'text-stone-400 hover:text-white'
+                }`}
+              >
+                {th.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* CASE D: ERASER OPTIONS */}
+      {activeTool === 'eraser' && (
+        <div className="bg-stone-900/95 border-b border-rose-900/40 px-2 py-1.5 flex items-center gap-2 text-xs z-20 shrink-0 overflow-x-auto no-scrollbar scroll-smooth">
+          <button
+            onClick={handleUndo}
+            disabled={strokes.length === 0}
+            className="flex items-center gap-1 px-3 py-1 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 cursor-pointer disabled:opacity-30 whitespace-nowrap shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>آخری نشان مٹائیں</span>
+          </button>
+
+          <button
+            onClick={() => {
+              if (strokes.length > 0) {
+                setStrokes([]);
+                setRedoStrokes([]);
+                showToast('تمام لکیریں و ہائی لائٹس صاف کر دی گئیں');
+              }
+            }}
+            disabled={strokes.length === 0}
+            className="flex items-center gap-1 px-3 py-1 rounded-xl bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-700/50 cursor-pointer disabled:opacity-30 whitespace-nowrap shrink-0"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>تمام لکیریں و ہائی لائٹس صاف کریں</span>
+          </button>
+
+          <button
+            onClick={() => {
+              if (textList.length > 0) {
+                setTextList([]);
+                setSelectedTextId(null);
+                showToast('تمام تحریریں مٹا دی گئیں');
+              }
+            }}
+            disabled={textList.length === 0}
+            className="flex items-center gap-1 px-3 py-1 rounded-xl bg-stone-800 hover:bg-stone-700 text-rose-400 border border-stone-700 cursor-pointer disabled:opacity-30 whitespace-nowrap shrink-0"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>تمام تحریریں حذف کریں</span>
+          </button>
+
+          <span className="text-[11px] text-stone-400 mr-auto whitespace-nowrap">
+            (کینوس پر کسی بھی لکیر پر کلک کر کے بھی مٹا سکتے ہیں)
+          </span>
         </div>
       )}
 
@@ -1331,7 +1532,11 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
               onTouchMove={handlePointerMove}
               onTouchEnd={handlePointerUp}
               className={`absolute inset-0 z-20 ${
-                activeTool === 'text' ? 'pointer-events-none' : 'cursor-crosshair'
+                activeTool === 'text'
+                  ? 'pointer-events-none'
+                  : activeTool === 'eraser'
+                  ? 'cursor-cell'
+                  : 'cursor-crosshair'
               }`}
             />
 
