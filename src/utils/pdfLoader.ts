@@ -79,6 +79,11 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
     // 1. Direct Archive URL (CapacitorHttp handles direct requests natively with no CORS)
     if (cleanUrl.startsWith('http')) {
       candidateUrls.push(cleanUrl);
+      // If direct us.archive node URL, also add official archive.org/download redirect mirror
+      const match = cleanUrl.match(/\/items\/([^\/]+)\/([^\/]+)$/i);
+      if (match && match[1] && match[2]) {
+        candidateUrls.push(`https://archive.org/download/${match[1]}/${match[2]}`);
+      }
     }
     // 2. High-speed public CORS proxy fallbacks (in case mobile ISP restricts archive.org direct IPs)
     if (cleanUrl.startsWith('http')) {
@@ -96,6 +101,10 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
     // 2. Direct Archive URL
     if (cleanUrl.startsWith('http')) {
       candidateUrls.push(cleanUrl);
+      const match = cleanUrl.match(/\/items\/([^\/]+)\/([^\/]+)$/i);
+      if (match && match[1] && match[2]) {
+        candidateUrls.push(`https://archive.org/download/${match[1]}/${match[2]}`);
+      }
     }
     // 3. Public CORS proxies
     if (cleanUrl.startsWith('http')) {
@@ -134,34 +143,38 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
 
       // Stream with live progress
       if (response.body) {
-        const reader = response.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let received = 0;
+        try {
+          const reader = response.body.getReader();
+          const chunks: Uint8Array[] = [];
+          let received = 0;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value && value.length > 0) {
-            chunks.push(value);
-            received += value.length;
-            if (onProgress && total > 0) {
-              const pct = Math.min(99, Math.max(1, Math.round((received / total) * 100)));
-              onProgress(pct);
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value && value.length > 0) {
+              chunks.push(value);
+              received += value.length;
+              if (onProgress && total > 0) {
+                const pct = Math.min(99, Math.max(1, Math.round((received / total) * 100)));
+                onProgress(pct);
+              }
             }
           }
-        }
 
-        if (received > 10000) {
-          const combined = new Uint8Array(received);
-          let offset = 0;
-          for (const chunk of chunks) {
-            combined.set(chunk, offset);
-            offset += chunk.length;
+          if (received > 10000) {
+            const combined = new Uint8Array(received);
+            let offset = 0;
+            for (const chunk of chunks) {
+              combined.set(chunk, offset);
+              offset += chunk.length;
+            }
+            if (isValidPdfBuffer(combined.buffer)) {
+              if (onProgress) onProgress(100);
+              return combined.buffer;
+            }
           }
-          if (isValidPdfBuffer(combined.buffer)) {
-            if (onProgress) onProgress(100);
-            return combined.buffer;
-          }
+        } catch (streamErr) {
+          console.warn('Streaming read interrupted, falling back to arrayBuffer:', streamErr);
         }
       }
 
