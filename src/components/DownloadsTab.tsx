@@ -14,7 +14,7 @@ import {
   FileCheck2,
   RefreshCw
 } from 'lucide-react';
-import { VolumeData, ResponseBook } from '../types/book';
+import { VolumeData, ResponseBook, ActiveDownloadItem } from '../types/book';
 import {
   getSavedSnapshots,
   deleteSnapshotFromStorage,
@@ -32,6 +32,7 @@ interface DownloadsTabProps {
   onNavigateHome?: () => void;
   onDeleteInternalBook?: (volumeId: number) => void;
   responseBooks?: ResponseBook[];
+  activeDownloads?: Record<number, ActiveDownloadItem>;
 }
 
 export const DownloadsTab: React.FC<DownloadsTabProps> = ({
@@ -41,7 +42,9 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
   onNavigateHome,
   onDeleteInternalBook,
   responseBooks = [],
+  activeDownloads = {},
 }) => {
+  const activeDownloadsList = Object.values(activeDownloads);
   // Default to 'downloaded' as requested by the user
   const [filter, setFilter] = useState<'downloaded' | 'available' | 'snapshots'>('downloaded');
   const [snapshots, setSnapshots] = useState<SavedSnapshot[]>([]);
@@ -214,7 +217,71 @@ export const DownloadsTab: React.FC<DownloadsTabProps> = ({
       {/* ============================================================== */}
       {filter === 'downloaded' && (
         <div className="space-y-4">
-          {downloadedVolumes.length === 0 ? (
+          {/* LIVE ACTIVE DOWNLOADING BOOKS (Visible immediately when downloading begins!) */}
+          {activeDownloadsList.length > 0 && (
+            <div className="space-y-3 mb-5">
+              <div className="flex items-center gap-2 text-xs font-bold text-amber-400 font-sans px-1">
+                <Download className="w-4 h-4 animate-bounce text-amber-400" />
+                <span>ابھی ڈاؤن لوڈ ہو رہی ہیں (ڈاؤن لوڈ کا عمل جاری ہے):</span>
+              </div>
+              {activeDownloadsList.map((item) => (
+                <div
+                  key={item.volumeId}
+                  className="bg-stone-900 border-2 border-amber-500/60 rounded-3xl p-4 sm:p-5 shadow-2xl relative overflow-hidden"
+                >
+                  <div className="flex items-center gap-4 mb-3">
+                    <div className="w-14 h-20 sm:w-16 sm:h-22 rounded-2xl bg-stone-950 border border-amber-600/50 overflow-hidden shrink-0 shadow flex items-center justify-center relative">
+                      {item.coverImageUrl ? (
+                        <img
+                          src={item.coverImageUrl}
+                          alt={item.volumeTitleUrdu}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="font-nastaliq text-xs text-amber-300">
+                          {item.volumeTitleUrdu}
+                        </span>
+                      )}
+                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                        <RefreshCw className="w-6 h-6 text-amber-400 animate-spin" />
+                      </div>
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-600/40 text-[11px] font-bold font-sans mb-1">
+                        <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                        <span>ڈاؤن لوڈنگ جاری ہے: {item.progress}%</span>
+                      </div>
+
+                      <h3 className="font-nastaliq text-lg sm:text-xl font-bold text-amber-200 truncate">
+                        {item.volumeTitleUrdu} {item.topic ? `— ${item.topic}` : ''}
+                      </h3>
+
+                      <p className="text-[11px] text-stone-300 font-sans mt-0.5">
+                        ایپ کے انٹرنل فولڈر میں محفوظ کی جا رہی ہے... ({item.fileSize || '14 MB'})
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Live Progress Bar with Smooth Pulse */}
+                  <div className="space-y-1">
+                    <div className="w-full bg-stone-950 rounded-full h-3 p-0.5 border border-stone-800 overflow-hidden">
+                      <div
+                        className="bg-gradient-to-r from-amber-500 via-emerald-500 to-teal-400 h-full rounded-full transition-all duration-300 ease-out shadow-sm"
+                        style={{ width: `${Math.max(5, item.progress)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center text-[10px] text-stone-400 font-mono px-1">
+                      <span>مکمل ہونے پر خودکار آف لائن تیار ہو جائے گی</span>
+                      <span className="text-amber-400 font-bold">{item.progress}%</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {downloadedVolumes.length === 0 && activeDownloadsList.length === 0 ? (
             <div className="bg-stone-900/80 border border-stone-800 rounded-3xl p-10 sm:p-14 text-center text-stone-400 space-y-4 shadow-xl">
               <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 mx-auto flex items-center justify-center">
                 <FolderDown className="w-8 h-8" />

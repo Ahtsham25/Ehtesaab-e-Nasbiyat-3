@@ -10,15 +10,6 @@ on:
       - main
       - master
   workflow_dispatch:
-    inputs:
-      build_variant:
-        description: 'Choose build variant'
-        required: true
-        default: 'all_apk'
-        type: choice
-        options:
-          - all_apk
-          - debug_only
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -107,51 +98,32 @@ jobs:
         run: |
           chmod +x android/gradlew
 
-      - name: 🚀 Compile Android APK via Gradle
+      - name: 🚀 Compile Android Debug APK via Gradle
         run: |
           cd android
-          echo "=== Building Debug APK ==="
+          echo "=== Building Single Clean Debug APK ==="
           ./gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m"
-
-          if [ "${{ github.event.inputs.build_variant }}" != "debug_only" ]; then
-            echo "=== Building Release APK ==="
-            ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=512m" || echo "Release build completed or optional"
-          fi
           cd ..
 
-      - name: 📁 Collect & Organize Output APKs
+      - name: 📁 Collect & Organize Output APK
         run: |
           mkdir -p output/apk
 
-          find android/app/build/outputs/apk/ -type f -name "*.apk" -exec ls -lh {} +
-
-          # 1. Debug APK (Pre-signed with Android debug key, ready to install on any device)
+          # Copy only the pre-signed, 100% ready to install Debug APK
           if [ -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-DirectInstall.apk
-            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat-Debug.apk
-            echo "✅ Created Installable APK"
+            cp android/app/build/outputs/apk/debug/app-debug.apk output/apk/Ihtisab-e-Nasbiyat.apk
+            echo "✅ Successfully prepared Ihtisab-e-Nasbiyat.apk"
           fi
 
-          # 2. Release APK - sign with debug keystore if unsigned so phone allows installation
-          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then
-            cp android/app/build/outputs/apk/release/app-release.apk output/apk/Ihtisab-e-Nasbiyat-Release.apk
-            echo "✅ Found Signed Release APK"
-          elif [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
-            # Automatically sign with debug key so users can install it directly without Play Store keystore errors
-            jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore ~/.android/debug.keystore -storepass android -keypass android android/app/build/outputs/apk/release/app-release-unsigned.apk androiddebugkey 2>/dev/null || true
-            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output/apk/Ihtisab-e-Nasbiyat-Release-Signed.apk
-            echo "✅ Auto-Signed Release APK"
-          fi
-
-          echo "=== Generated Files in output/apk ==="
+          echo "=== Generated Single APK in output/apk ==="
           ls -lh output/apk/
           sha256sum output/apk/*.apk || true
 
-      - name: 📤 Upload APK Artifacts
+      - name: 📤 Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Ihtisab-e-Nasbiyat-APK
-          path: output/apk/*.apk
+          path: output/apk/Ihtisab-e-Nasbiyat.apk
           retention-days: 30
 
       - name: 📋 Build Summary Report
@@ -169,4 +141,4 @@ jobs:
           echo "#### 📲 How to install:" >> $GITHUB_STEP_SUMMARY
           echo "1. Download the \`Ihtisab-e-Nasbiyat-APK\` zip from Artifacts below." >> $GITHUB_STEP_SUMMARY
           echo "2. Extract the zip file on your computer or phone." >> $GITHUB_STEP_SUMMARY
-          echo "3. Tap \`Ihtisab-e-Nasbiyat-Debug.apk\` to install directly on any Android device." >> $GITHUB_STEP_SUMMARY
+          echo "3. Tap \`Ihtisab-e-Nasbiyat.apk\` to install directly on any Android device." >> $GITHUB_STEP_SUMMARY

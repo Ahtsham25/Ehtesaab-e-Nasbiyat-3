@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { App as CapApp } from '@capacitor/app';
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   Download,
@@ -102,6 +103,51 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2500);
   };
+
+  // Android Hardware / System Back Button & Escape Key inside Reader
+  useEffect(() => {
+    let listenerHandle: any = null;
+
+    try {
+      CapApp.addListener('backButton', () => {
+        if (showDualEditor) {
+          setShowDualEditor(false);
+          setCapturedPageDataUrl(null);
+        } else if (isDrawMode) {
+          setIsDrawMode(false);
+        } else if (showOptionsMenu) {
+          setShowOptionsMenu(false);
+        } else {
+          onClose();
+        }
+      }).then((handle) => {
+        listenerHandle = handle;
+      }).catch(() => {});
+    } catch {}
+
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showDualEditor) {
+          setShowDualEditor(false);
+        } else if (isDrawMode) {
+          setIsDrawMode(false);
+        } else if (showOptionsMenu) {
+          setShowOptionsMenu(false);
+        } else {
+          onClose();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleEsc);
+
+    return () => {
+      if (listenerHandle && typeof listenerHandle.remove === 'function') {
+        listenerHandle.remove();
+      }
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [showDualEditor, isDrawMode, showOptionsMenu, onClose]);
 
   // Full 100% Book Preloader & Loader: Runs ONCE per book volume
   const loadEntireBook100Percent = useCallback(async (forceReload = false) => {

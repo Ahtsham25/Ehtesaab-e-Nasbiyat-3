@@ -16,6 +16,17 @@ export interface VolumeData {
   isBookmarked?: boolean;
 }
 
+export interface ActiveDownloadItem {
+  volumeId: number;
+  volumeNumber: number;
+  volumeTitleUrdu: string;
+  coverImageUrl?: string;
+  progress: number;
+  fileSize?: string;
+  topic?: string;
+}
+
+
 export function getReadingProgress(lastReadPage?: number, pageCount?: number): number {
   if (!lastReadPage || !pageCount || pageCount <= 0) return 0;
   const pct = Math.round((lastReadPage / pageCount) * 100);

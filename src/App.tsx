@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { VolumeData, ActiveTab, HighlightItem } from './types/book';
+import { App as CapApp } from '@capacitor/app';
+import { VolumeData, ActiveTab, HighlightItem, ActiveDownloadItem } from './types/book';
 import { DEFAULT_VOLUMES, STORAGE_KEY } from './data/defaultVolumes';
 import { SplashScreen } from './components/SplashScreen';
 import { Header } from './components/Header';
@@ -52,6 +53,70 @@ export default function App() {
     title: '',
   });
   const [drawingsCount, setDrawingsCount] = useState<number>(0);
+  const [activeDownloads, setActiveDownloads] = useState<Record<number, ActiveDownloadItem>>({});
+
+  // 1. Android System / Hardware Back Button & Mobile Browser Navigation Integration
+  useEffect(() => {
+    let backButtonHandle: any = null;
+
+    try {
+      CapApp.addListener('backButton', () => {
+        // Priority 1: If Photo / Screen Editor is open, return to home
+        if (activeTab === 'editor') {
+          setActiveTab('home');
+          return;
+        }
+
+        // Priority 2: If Book Reader modal is open, close it
+        if (selectedVolumeForReading) {
+          setSelectedVolumeForReading(null);
+          return;
+        }
+
+        // Priority 3: If on any non-home tab (downloads, bookmarks, highlights, etc.), go back to home
+        if (activeTab !== 'home') {
+          setActiveTab('home');
+          return;
+        }
+
+        // Priority 4: Already on home with nothing open -> exit app cleanly
+        CapApp.exitApp();
+      }).then((handle) => {
+        backButtonHandle = handle;
+      }).catch(() => {});
+    } catch {}
+
+    const handlePopState = () => {
+      if (activeTab === 'editor') {
+        setActiveTab('home');
+      } else if (selectedVolumeForReading) {
+        setSelectedVolumeForReading(null);
+      } else if (activeTab !== 'home') {
+        setActiveTab('home');
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (activeTab === 'editor') {
+          setActiveTab('home');
+        } else if (selectedVolumeForReading) {
+          setSelectedVolumeForReading(null);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      if (backButtonHandle && typeof backButtonHandle.remove === 'function') {
+        backButtonHandle.remove();
+      }
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeTab, selectedVolumeForReading]);
 
   // Response books CRUD
   const handleAddResponseBook = (newBook: ResponseBook) => {
@@ -285,21 +350,48 @@ export default function App() {
     const filename = `Ihtisab_Nasbiyat_Jild_${volume.volumeNumber}.pdf`;
     const targetUrl = resolveVolumePdfUrl(volume.volumeNumber, volume.pdfUrl);
 
+    // 1. Immediately record in active downloads so it shows up in Downloads folder at once!
+    setActiveDownloads((prev) => ({
+      ...prev,
+      [volume.id]: {
+        volumeId: volume.id,
+        volumeNumber: volume.volumeNumber,
+        volumeTitleUrdu: volume.volumeTitleUrdu,
+        coverImageUrl: volume.coverImageUrl,
+        progress: 8,
+        fileSize: volume.fileSize || '14 MB',
+        topic: volume.topic,
+      },
+    }));
+
+    // 2. Automatically navigate to Downloads tab so user sees it right there in the download folder
+    setActiveTab('downloads');
+
     setDownloadToast({
       show: true,
-      title: `${volume.volumeTitleUrdu}: ایپ کے اندر محفوظ ہو رہی ہے...`,
+      title: `${volume.volumeTitleUrdu}: ڈاؤن لوڈ شروع ہو چکا ہے، ڈاؤن لوڈ فولڈر میں چیک فرمائیں...`,
     });
 
     try {
-      // 1. Fetch real PDF buffer with live progress
+      // 3. Fetch real PDF buffer with smooth live progressive counter
       const buffer = await fetchPdfArrayBuffer(targetUrl, (pct) => {
+        setActiveDownloads((prev) => {
+          if (!prev[volume.id]) return prev;
+          return {
+            ...prev,
+            [volume.id]: {
+              ...prev[volume.id],
+              progress: pct,
+            },
+          };
+        });
         setDownloadToast({
           show: true,
           title: `${volume.volumeTitleUrdu}: ڈاؤن لوڈنگ ${pct}% (ایپ میں محفوظ ہو رہی ہے)...`,
         });
       });
 
-      // 2. Save full Blob in IndexedDB internal folder
+      // 4. Save full Blob in IndexedDB internal folder
       const blob = new Blob([buffer], { type: 'application/pdf' });
       await saveBookToInternalStorage({
         volumeId: volume.id,
@@ -310,24 +402,37 @@ export default function App() {
         blob,
       });
 
-      // 3. Mark as downloaded in app state
+      // 5. Mark as downloaded in app state
       const updated = volumes.map((v) =>
         v.id === volume.id ? { ...v, isDownloaded: true } : v
       );
       saveVolumesState(updated);
 
-      // 4. Save directly into device / browser downloads too
+      // Remove from active downloads
+      setActiveDownloads((prev) => {
+        const copy = { ...prev };
+        delete copy[volume.id];
+        return copy;
+      });
+
+      // 6. Save directly into device / browser downloads too
       triggerDirectDownload(blob, filename);
 
       setDownloadToast({
         show: true,
-        title: `کامیابی! ${volume.volumeTitleUrdu} ایپ کے انٹرنل فولڈر اور ڈیوائس میں محفوظ ہو چکی ہے۔`,
+        title: `کامیابی! ${volume.volumeTitleUrdu} ڈاؤن لوڈ مکمل، اب آف لائن تیار ہے۔`,
       });
       setTimeout(() => {
         setDownloadToast({ show: false, title: '' });
       }, 4500);
     } catch (err: any) {
       console.warn('Failed to download book buffer, triggering direct stream fallback:', err);
+      setActiveDownloads((prev) => {
+        const copy = { ...prev };
+        delete copy[volume.id];
+        return copy;
+      });
+
       // Fallback: trigger stream download
       const directApiDownloadUrl = `/api/download?url=${encodeURIComponent(targetUrl)}&filename=${encodeURIComponent(filename)}`;
       triggerDirectDownload(directApiDownloadUrl, filename);
@@ -745,6 +850,7 @@ export default function App() {
             onNavigateHome={() => setActiveTab('home')}
             onDeleteInternalBook={handleDeleteInternalBook}
             responseBooks={responseBooks}
+            activeDownloads={activeDownloads}
           />
         )}
 

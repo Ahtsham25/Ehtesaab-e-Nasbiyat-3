@@ -118,23 +118,40 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
   for (let i = 0; i < candidateUrls.length; i++) {
     const targetUrl = candidateUrls[i];
     try {
-      if (onProgress) onProgress(Math.min(15 + i * 15, 60));
+      // Create a smooth progressive heartbeat so the counter is NEVER stuck at 15%
+      let currentReportedPct = Math.min(10 + i * 10, 35);
+      if (onProgress) onProgress(currentReportedPct);
+
+      const progressInterval = setInterval(() => {
+        if (currentReportedPct < 92) {
+          const step = currentReportedPct < 45 ? 3 : currentReportedPct < 75 ? 2 : 1;
+          currentReportedPct = Math.min(94, currentReportedPct + step);
+          if (onProgress) onProgress(currentReportedPct);
+        }
+      }, 300);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout for large books
 
-      const response = await fetch(targetUrl, {
-        headers: { Accept: 'application/pdf,*/*' },
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeoutId));
+      let response: Response;
+      try {
+        response = await fetch(targetUrl, {
+          headers: { Accept: 'application/pdf,*/*' },
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
+        clearInterval(progressInterval);
         continue;
       }
 
       // Check if response is HTML error page (e.g. index.html or 404 page) instead of PDF
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('text/html') || contentType.includes('application/json')) {
+        clearInterval(progressInterval);
         continue;
       }
 
@@ -154,9 +171,10 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
             if (value && value.length > 0) {
               chunks.push(value);
               received += value.length;
-              if (onProgress && total > 0) {
-                const pct = Math.min(99, Math.max(1, Math.round((received / total) * 100)));
-                onProgress(pct);
+              if (total > 0) {
+                const streamPct = Math.min(98, Math.max(currentReportedPct, Math.round((received / total) * 100)));
+                currentReportedPct = streamPct;
+                if (onProgress) onProgress(streamPct);
               }
             }
           }
@@ -169,6 +187,7 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
               offset += chunk.length;
             }
             if (isValidPdfBuffer(combined.buffer)) {
+              clearInterval(progressInterval);
               if (onProgress) onProgress(100);
               return combined.buffer;
             }
@@ -180,6 +199,7 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
 
       // Direct arrayBuffer fallback on this response
       const buf = await response.arrayBuffer();
+      clearInterval(progressInterval);
       if (isValidPdfBuffer(buf)) {
         if (onProgress) onProgress(100);
         return buf;

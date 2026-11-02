@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { App as CapApp } from '@capacitor/app';
 import {
   X,
   Highlighter,
@@ -31,7 +32,7 @@ import {
 import { VolumeData } from '../types/book';
 import { DEFAULT_VOLUMES } from '../data/defaultVolumes';
 import { resolveVolumeArchiveId, resolveVolumePdfUrl } from '../utils/archiveUtils';
-import { loadPdfDocument, renderPageToDataUrl } from '../utils/pdfLoader';
+import { loadPdfDocument, renderPageToDataUrl, isNativeMobileApp } from '../utils/pdfLoader';
 
 interface ScreenEditorModalProps {
   volume: VolumeData;
@@ -131,8 +132,9 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
   const [titlePageImage, setTitlePageImage] = useState<string>('');
   const [isRenderingCover, setIsRenderingCover] = useState<boolean>(false);
 
-  // Cached active PDF document proxy
+  // Cached active PDF document proxy and tracked volume ID
   const docProxyRef = useRef<any>(pdfDoc || null);
+  const docVolumeIdRef = useRef<number | null>(initialVolume ? initialVolume.id : null);
 
   // Active Tool: 'text' | 'highlight' | 'box' | 'line' | 'eraser'
   const [activeTool, setActiveTool] = useState<EditorToolMode>('text');
@@ -205,19 +207,94 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     setTimeout(() => setToastMsg(null), 2500);
   };
 
-  // Archive Identifier & Real Book Cover Image
+  // Android Hardware / System Back Button & Escape Key inside Editor
+  useEffect(() => {
+    let listenerHandle: any = null;
+
+    try {
+      CapApp.addListener('backButton', () => {
+        if (showVolumePicker) {
+          setShowVolumePicker(false);
+        } else if (editingTextItem) {
+          setEditingTextItem(null);
+        } else {
+          onClose();
+        }
+      }).then((handle) => {
+        listenerHandle = handle;
+      }).catch(() => {});
+    } catch {}
+
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showVolumePicker) {
+          setShowVolumePicker(false);
+        } else if (editingTextItem) {
+          setEditingTextItem(null);
+        } else {
+          onClose();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleEsc);
+
+    return () => {
+      if (listenerHandle && typeof listenerHandle.remove === 'function') {
+        listenerHandle.remove();
+      }
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [showVolumePicker, editingTextItem, onClose]);
+
+  // Archive Identifier & Real Book Cover Image for active volume
   const archiveId = resolveVolumeArchiveId(activeVolume.volumeNumber, activeVolume.archiveItemId);
   const rawCoverUrl = activeVolume.coverImageUrl || `https://archive.org/services/img/${archiveId}`;
-  const proxiedCoverUrl = `/api/image-proxy?url=${encodeURIComponent(rawCoverUrl)}`;
+  const rawThumbBackupUrl = `https://archive.org/download/${archiveId}/__ia_thumb.jpg`;
+
+  // Determine cover URL: On native mobile APK, never use /api/image-proxy; use direct URL!
+  const getVolumeCoverUrl = (vol: VolumeData) => {
+    const aId = resolveVolumeArchiveId(vol.volumeNumber, vol.archiveItemId);
+    const raw = vol.coverImageUrl || `https://archive.org/services/img/${aId}`;
+    if (isNativeMobileApp()) {
+      return raw;
+    }
+    return `/api/image-proxy?url=${encodeURIComponent(raw)}`;
+  };
+
+  const [activeCoverSrc, setActiveCoverSrc] = useState<string>(() => getVolumeCoverUrl(activeVolume));
+  const [coverLoadFailed, setCoverLoadFailed] = useState<boolean>(false);
+
+  // When activeVolume changes, sync cover image URL and reset fail state
+  useEffect(() => {
+    setActiveCoverSrc(getVolumeCoverUrl(activeVolume));
+    setCoverLoadFailed(false);
+  }, [activeVolume]);
+
+  const handleCoverImgError = () => {
+    if (activeCoverSrc.includes('/api/image-proxy')) {
+      // If web proxy failed, try direct Archive.org service URL
+      setActiveCoverSrc(rawCoverUrl);
+    } else if (activeCoverSrc === rawCoverUrl) {
+      // Try Archive.org __ia_thumb.jpg mirror
+      setActiveCoverSrc(rawThumbBackupUrl);
+    } else {
+      // If remote image fails, smoothly fall back to rendered Page 1 of this volume (never app icon!)
+      setCoverLoadFailed(true);
+    }
+  };
 
   // Render Target Reading Page
   useEffect(() => {
     let isCancelled = false;
 
     async function getDocumentProxy() {
-      if (docProxyRef.current) return docProxyRef.current;
+      if (docProxyRef.current && docVolumeIdRef.current === activeVolume.id) {
+        return docProxyRef.current;
+      }
       if (pdfDoc && activeVolume.id === initialVolume?.id) {
         docProxyRef.current = pdfDoc;
+        docVolumeIdRef.current = activeVolume.id;
         return pdfDoc;
       }
       try {
@@ -225,6 +302,7 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         const loaded = await loadPdfDocument({ url: pdfUrl });
         if (!isCancelled) {
           docProxyRef.current = loaded;
+          docVolumeIdRef.current = activeVolume.id;
         }
         return loaded;
       } catch (err) {
@@ -265,38 +343,54 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
     };
   }, [activeVolume, currentPage, initialPageImage, initialPage, initialVolume, pdfDoc]);
 
-  // Render Title Page (Page 1) when requested
+  // Auto-render Page 1 (Title Page / سرورق) for activeVolume whenever volume changes
   useEffect(() => {
     let isCancelled = false;
-    if (coverMode === 'title_page' && !titlePageImage) {
-      setIsRenderingCover(true);
-      (async () => {
-        try {
-          let doc = docProxyRef.current;
-          if (!doc) {
+    setTitlePageImage('');
+    setIsRenderingCover(true);
+
+    async function renderVolumeTitlePage() {
+      try {
+        let doc = (docProxyRef.current && docVolumeIdRef.current === activeVolume.id)
+          ? docProxyRef.current
+          : null;
+
+        if (!doc) {
+          if (pdfDoc && activeVolume.id === initialVolume?.id) {
+            doc = pdfDoc;
+            docProxyRef.current = pdfDoc;
+            docVolumeIdRef.current = activeVolume.id;
+          } else {
             const pdfUrl = resolveVolumePdfUrl(activeVolume.volumeNumber, activeVolume.pdfUrl);
             doc = await loadPdfDocument({ url: pdfUrl });
-            if (!isCancelled) docProxyRef.current = doc;
-          }
-          if (doc && !isCancelled) {
-            const p1 = await renderPageToDataUrl(doc, 1, 800);
             if (!isCancelled) {
-              setTitlePageImage(p1);
+              docProxyRef.current = doc;
+              docVolumeIdRef.current = activeVolume.id;
             }
           }
-        } catch (err) {
-          console.warn('Error rendering title page:', err);
-        } finally {
+        }
+
+        if (doc && !isCancelled) {
+          const p1 = await renderPageToDataUrl(doc, 1, 800);
           if (!isCancelled) {
-            setIsRenderingCover(false);
+            setTitlePageImage(p1);
           }
         }
-      })();
+      } catch (err) {
+        console.warn('Failed to render volume title page:', err);
+      } finally {
+        if (!isCancelled) {
+          setIsRenderingCover(false);
+        }
+      }
     }
+
+    renderVolumeTitlePage();
+
     return () => {
       isCancelled = true;
     };
-  }, [coverMode, activeVolume, titlePageImage]);
+  }, [activeVolume, initialVolume, pdfDoc]);
 
   // Responsive container measuring
   useEffect(() => {
@@ -751,40 +845,70 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
         });
 
       const targetRefUrl = refPageImage;
-      const targetCoverUrl = coverMode === 'title_page' && titlePageImage ? titlePageImage : proxiedCoverUrl;
+      const targetCoverUrl =
+        (coverMode === 'title_page' || coverLoadFailed) && titlePageImage
+          ? titlePageImage
+          : (activeCoverSrc || titlePageImage);
 
       // Draw real book images
       try {
-        const [imgRef, imgCover] = await Promise.all([
-          loadImage(targetRefUrl),
-          loadImage(targetCoverUrl),
-        ]);
+        let imgRef: HTMLImageElement | null = null;
+        let imgCover: HTMLImageElement | null = null;
+
+        if (targetRefUrl) {
+          try {
+            imgRef = await loadImage(targetRefUrl);
+          } catch (e) {
+            console.warn('Ref page load error:', e);
+          }
+        }
+
+        if (targetCoverUrl) {
+          try {
+            imgCover = await loadImage(targetCoverUrl);
+          } catch (e) {
+            console.warn('Target cover remote load failed, falling back to titlePageImage:', e);
+            if (titlePageImage && targetCoverUrl !== titlePageImage) {
+              try {
+                imgCover = await loadImage(titlePageImage);
+              } catch {}
+            }
+          }
+        }
 
         // Draw Reference Page (Right in RTL: x: 355, y: topSpacePx)
-        ctx.drawImage(imgRef, 355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-        ctx.strokeStyle = '#d1d5db';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        if (imgRef) {
+          ctx.drawImage(imgRef, 355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+          ctx.strokeStyle = '#d1d5db';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        }
 
         // Draw Title / Cover Page (Left in RTL: x: 30, y: topSpacePx)
-        ctx.drawImage(imgCover, 30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-        ctx.strokeRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        if (imgCover) {
+          ctx.drawImage(imgCover, 30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+          ctx.strokeStyle = '#d1d5db';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+        } else {
+          // Render elegant vector Islamic cover on canvas if image missing
+          ctx.save();
+          ctx.fillStyle = '#064e3b';
+          ctx.fillRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+          ctx.strokeStyle = '#d97706';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
+          ctx.fillStyle = '#fbbf24';
+          ctx.font = 'bold 20px serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('احتساب ناصبیت', 30 + PAGE_WIDTH / 2, topSpacePx + 140);
+          ctx.font = 'bold 16px sans-serif';
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(`جلد ${activeVolume.volumeNumber} (${activeVolume.volumeTitleUrdu})`, 30 + PAGE_WIDTH / 2, topSpacePx + 180);
+          ctx.restore();
+        }
       } catch (e) {
         console.warn('Some images could not be loaded together:', e);
-        try {
-          if (targetRefUrl) {
-            const imgRef = await loadImage(targetRefUrl);
-            ctx.drawImage(imgRef, 355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-            ctx.strokeRect(355, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-          }
-        } catch {}
-        try {
-          if (targetCoverUrl) {
-            const imgCover = await loadImage(targetCoverUrl);
-            ctx.drawImage(imgCover, 30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-            ctx.strokeRect(30, topSpacePx, PAGE_WIDTH, PAGE_HEIGHT);
-          }
-        } catch {}
       }
 
       // 2. Draw canvas drawing strokes (with exact opacity)
@@ -1499,21 +1623,48 @@ export const ScreenEditorModal: React.FC<ScreenEditorModalProps> = ({
                 </div>
 
                 {/* Scanned / Proxied Title / Cover Image */}
-                <div className="flex-1 w-full relative overflow-hidden bg-white flex items-center justify-center">
-                  {isRenderingCover ? (
-                    <div className="flex flex-col items-center justify-center gap-2 p-4 text-center">
-                      <Loader2 className="w-6 h-6 text-emerald-600 animate-spin" />
-                      <span className="text-[11px] text-stone-500 font-nastaliq">سرورق تیار ہو رہا ہے...</span>
-                    </div>
+                <div className="flex-1 w-full relative overflow-hidden bg-white flex items-center justify-center p-0.5">
+                  {coverMode === 'title_page' || coverLoadFailed ? (
+                    titlePageImage ? (
+                      <img
+                        src={titlePageImage}
+                        alt={`سرورق و ٹائٹل صفحہ جلد ${activeVolume.volumeNumber}`}
+                        className="max-w-full max-h-full object-contain"
+                      />
+                    ) : isRenderingCover ? (
+                      <div className="flex flex-col items-center justify-center gap-2 p-4 text-center">
+                        <Loader2 className="w-6 h-6 text-emerald-600 animate-spin" />
+                        <span className="text-[11px] text-stone-500 font-nastaliq">ٹائٹل پیج تیار ہو رہا ہے...</span>
+                      </div>
+                    ) : (
+                      /* Rich Islamic Cover Card Fallback - NEVER app icon */
+                      <div className="w-full h-full bg-gradient-to-tr from-emerald-950 via-stone-900 to-amber-950 p-3 flex flex-col justify-between items-center text-center border-2 border-amber-600/50 rounded">
+                        <div className="text-[10px] text-amber-300 font-arabic border-b border-amber-500/30 pb-0.5 w-full">
+                          کتابِ مستطاب
+                        </div>
+                        <div className="my-auto">
+                          <h3 className="font-nastaliq text-base font-bold text-amber-300 leading-tight">
+                            احتساب ناصبیت
+                          </h3>
+                          <div className="text-xs text-emerald-400 font-bold mt-1">
+                            {activeVolume.volumeTitleUrdu} (جلد {activeVolume.volumeNumber})
+                          </div>
+                          <p className="text-[9px] text-stone-300 font-sans mt-1 line-clamp-2 px-1">
+                            {activeVolume.topic}
+                          </p>
+                        </div>
+                        <div className="text-[9px] text-stone-400 font-sans border-t border-stone-800 pt-1 w-full flex justify-between">
+                          <span>صفحات: {activeVolume.pageCount || 476}</span>
+                          <span>علمی و تحقیقی انسائیکلوپیڈیا</span>
+                        </div>
+                      </div>
+                    )
                   ) : (
                     <img
-                      src={coverMode === 'title_page' && titlePageImage ? titlePageImage : proxiedCoverUrl}
-                      alt="سرورق کتاب"
-                      crossOrigin="anonymous"
+                      src={activeCoverSrc}
+                      alt={`سرورق کتاب جلد ${activeVolume.volumeNumber}`}
                       className="max-w-full max-h-full object-contain"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = '/app-logo.png';
-                      }}
+                      onError={handleCoverImgError}
                     />
                   )}
                 </div>
