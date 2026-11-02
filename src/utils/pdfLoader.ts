@@ -24,9 +24,25 @@ export function normalizePdfUrl(url: string): string {
 }
 
 /**
+ * Detect if running inside an installed mobile APK / Capacitor standalone environment
+ */
+export function isNativeMobileApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  const win = window as any;
+  if (win.Capacitor?.isNativePlatform?.()) return true;
+  if (win.Capacitor?.getPlatform?.() === 'android') return true;
+  if (window.location.protocol === 'capacitor:' || window.location.protocol === 'file:') return true;
+  // In Capacitor Android, the app is loaded from https://localhost with no port
+  if (window.location.hostname === 'localhost' && (!window.location.port || window.location.port === '')) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Verify if an ArrayBuffer contains valid PDF magic bytes (%PDF)
  */
-function isValidPdfBuffer(buf: ArrayBuffer | null | undefined): boolean {
+export function isValidPdfBuffer(buf: ArrayBuffer | null | undefined): boolean {
   if (!buf || buf.byteLength < 5000) return false;
   const header = new Uint8Array(buf.slice(0, 5));
   // Standard PDF magic header: %PDF- (0x25, 0x50, 0x44, 0x46)
@@ -42,8 +58,8 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
     throw new Error('پی ڈی ایف کا لنک دستیاب نہیں ہے۔');
   }
 
-  // If it's a relative local URL or blob
-  if (cleanUrl.startsWith('/') && !cleanUrl.startsWith('/api/') || cleanUrl.startsWith('./') || cleanUrl.startsWith('blob:')) {
+  // If it's a blob URL
+  if (cleanUrl.startsWith('blob:') || cleanUrl.startsWith('data:')) {
     const res = await fetch(cleanUrl);
     if (!res.ok) throw new Error(`مقامی فائل نہیں مل سکی (${res.status})`);
     const buf = await res.arrayBuffer();
@@ -53,34 +69,39 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
     }
   }
 
-  // Check if running inside mobile Capacitor standalone APK
-  const isCapacitorApk = typeof window !== 'undefined' && (
-    window.location.protocol === 'capacitor:' ||
-    window.location.protocol === 'file:' ||
-    (window.location.hostname === 'localhost' && !window.location.port)
-  );
+  const isNative = isNativeMobileApp();
 
-  const REMOTE_BACKEND_ORIGIN = 'https://ais-dev-erjfiq4ymk736kojel4sr5-221945065771.asia-east1.run.app';
-
-  // Build candidate URLs in optimal order
+  // Build candidate URLs in priority order
   const candidateUrls: string[] = [];
 
-  if (isCapacitorApk) {
-    // 1. Direct Archive URL (Capacitor Android has no browser CORS restrictions)
-    if (cleanUrl.startsWith('http')) candidateUrls.push(cleanUrl);
-    // 2. Remote Cloud Run backend proxy
-    candidateUrls.push(`${REMOTE_BACKEND_ORIGIN}/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`);
+  if (isNative) {
+    // In mobile APK, NEVER query /api/pdf-proxy on localhost because no Node server runs on the phone!
+    // 1. Direct Archive URL (CapacitorHttp handles direct requests natively with no CORS)
+    if (cleanUrl.startsWith('http')) {
+      candidateUrls.push(cleanUrl);
+    }
+    // 2. High-speed public CORS proxy fallbacks (in case mobile ISP restricts archive.org direct IPs)
+    if (cleanUrl.startsWith('http')) {
+      candidateUrls.push(`https://corsproxy.io/?url=${encodeURIComponent(cleanUrl)}`);
+      candidateUrls.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`);
+    }
   } else {
-    // 1. Local/relative express server proxy
-    candidateUrls.push(
-      cleanUrl.startsWith('/api/pdf-proxy')
-        ? cleanUrl
-        : `/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`
-    );
-    // 2. Direct URL fallback
-    if (cleanUrl.startsWith('http')) candidateUrls.push(cleanUrl);
-    // 3. Remote Cloud backend fallback
-    candidateUrls.push(`${REMOTE_BACKEND_ORIGIN}/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`);
+    // In Web browser preview:
+    // 1. Express backend proxy (runs alongside Vite)
+    if (cleanUrl.startsWith('/api/pdf-proxy')) {
+      candidateUrls.push(cleanUrl);
+    } else {
+      candidateUrls.push(`/api/pdf-proxy?url=${encodeURIComponent(cleanUrl)}`);
+    }
+    // 2. Direct Archive URL
+    if (cleanUrl.startsWith('http')) {
+      candidateUrls.push(cleanUrl);
+    }
+    // 3. Public CORS proxies
+    if (cleanUrl.startsWith('http')) {
+      candidateUrls.push(`https://corsproxy.io/?url=${encodeURIComponent(cleanUrl)}`);
+      candidateUrls.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(cleanUrl)}`);
+    }
   }
 
   let lastError: any = null;
@@ -88,24 +109,28 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
   for (let i = 0; i < candidateUrls.length; i++) {
     const targetUrl = candidateUrls[i];
     try {
-      if (onProgress) onProgress(Math.min(20 + i * 20, 60));
+      if (onProgress) onProgress(Math.min(15 + i * 15, 60));
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout for large books
 
       const response = await fetch(targetUrl, {
         headers: { Accept: 'application/pdf,*/*' },
-      });
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
 
       if (!response.ok) {
         continue;
       }
 
-      // Check if response is HTML error page instead of PDF
+      // Check if response is HTML error page (e.g. index.html or 404 page) instead of PDF
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('text/html') || contentType.includes('application/json')) {
         continue;
       }
 
       const contentLength = response.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : 15 * 1024 * 1024;
+      const total = contentLength ? parseInt(contentLength, 10) : 14 * 1024 * 1024;
 
       // Stream with live progress
       if (response.body) {
@@ -153,8 +178,8 @@ export async function fetchPdfArrayBuffer(url: string, onProgress?: (pct: number
   }
 
   throw new Error(
-    lastError?.message?.toLowerCase().includes('fetch') || lastError?.message?.toLowerCase().includes('network')
-      ? 'انٹرنیٹ کنکشن کا تعطل پیش آیا۔ برائے مہربانی دوبارہ کوشش فرمائیں۔'
+    lastError?.message?.toLowerCase().includes('abort') || lastError?.message?.toLowerCase().includes('network')
+      ? 'انٹرنیٹ کنکشن سست ہونے کی وجہ سے تاخیر ہوئی۔ برائے مہربانی "دوبارہ کوشش فرمائیں" دبائیں۔'
       : 'کتاب لوڈ کرنے میں دشواری پیش آئی۔ برائے مہربانی "دوبارہ کوشش فرمائیں" دبائیں۔'
   );
 }
