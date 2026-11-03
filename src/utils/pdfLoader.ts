@@ -255,15 +255,61 @@ export async function loadPdfDocument(
     return doc;
   }
 
-  // Fetch as ArrayBuffer with progress
-  const arrayBuffer = await fetchPdfArrayBuffer(source.url, onProgress);
+  // DIRECT ON-DEMAND ONLINE STREAMING (Opens in 1-2 seconds without downloading full 15MB book!)
+  const isNative = isNativeMobileApp();
+  const candidateUrls: string[] = [];
 
+  if (isNative) {
+    candidateUrls.push(source.url);
+    const match = source.url.match(/\/items\/([^\/]+)\/([^\/]+)$/i);
+    if (match && match[1] && match[2]) {
+      candidateUrls.push(`https://archive.org/download/${match[1]}/${match[2]}`);
+    }
+  } else {
+    // In web dev/preview, try Express proxy or direct URL
+    if (source.url.startsWith('/api/pdf-proxy')) {
+      candidateUrls.push(source.url);
+    } else {
+      candidateUrls.push(`/api/pdf-proxy?url=${encodeURIComponent(source.url)}`);
+    }
+    candidateUrls.push(source.url);
+  }
+
+  for (const targetUrl of candidateUrls) {
+    try {
+      const loadingTask = pdfjsLib.getDocument({
+        url: targetUrl,
+        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
+        cMapPacked: true,
+        rangeChunkSize: 65536,
+        disableAutoFetch: true, // Only fetch individual pages on demand!
+        disableStream: false,
+      });
+
+      if (onProgress) {
+        loadingTask.onProgress = ({ loaded, total }: { loaded: number; total: number }) => {
+          if (total > 0) {
+            onProgress(Math.min(99, Math.round((loaded / total) * 100)));
+          }
+        };
+      }
+
+      const doc = await loadingTask.promise;
+      docCache.set(source.url, doc);
+      if (onProgress) onProgress(100);
+      return doc;
+    } catch (e) {
+      console.warn(`Online range streaming failed on ${targetUrl}, trying next option...`, e);
+    }
+  }
+
+  // Fallback if direct online range streaming fails (e.g. restrictive network proxy)
+  const arrayBuffer = await fetchPdfArrayBuffer(source.url, onProgress);
   const loadingTask = pdfjsLib.getDocument({
     data: arrayBuffer,
     cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
     cMapPacked: true,
   });
-
   const doc = await loadingTask.promise;
   docCache.set(source.url, doc);
   return doc;

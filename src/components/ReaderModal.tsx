@@ -21,14 +21,13 @@ import {
 } from 'lucide-react';
 import { VolumeData, HighlightItem } from '../types/book';
 import { resolveVolumeArchiveId, resolveVolumePdfUrl, VERIFIED_ARCHIVE_VOLUMES } from '../utils/archiveUtils';
-import { loadPdfDocument, fetchPdfArrayBuffer } from '../utils/pdfLoader';
+import { loadPdfDocument } from '../utils/pdfLoader';
 import { CanvasDrawer } from './CanvasDrawer';
 import { DualPageEditorModal } from './DualPageEditorModal';
 import { recordRecentRead } from '../utils/readingHistory';
 import {
   triggerDirectDownload,
   saveSnapshotToStorage,
-  saveBookToInternalStorage,
   getBookFromInternalStorage,
   getUploadedPdfBlob
 } from '../utils/offlineStorage';
@@ -55,10 +54,11 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   onToggleBookmark,
   onUpdateProgress,
 }) => {
-  // 100% Full-Book Preloading States
+  // Book Loading & Page Rendering States
   const [isBookLoaded, setIsBookLoaded] = useState<boolean>(false);
+  const [isPageRendering, setIsPageRendering] = useState<boolean>(false);
   const [loadingProgress, setLoadingProgress] = useState<number>(0);
-  const [loadingStatus, setLoadingStatus] = useState<string>('کتاب کا ڈیٹا ڈاؤن لوڈ ہو رہا ہے...');
+  const [loadingStatus, setLoadingStatus] = useState<string>('آن لائن کتاب کھولی جا رہی ہے...');
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // PDF Document in Memory
@@ -149,12 +149,12 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
     };
   }, [showDualEditor, isDrawMode, showOptionsMenu, onClose]);
 
-  // Full 100% Book Preloader & Loader: Runs ONCE per book volume
-  const loadEntireBook100Percent = useCallback(async (forceReload = false) => {
+  // Fast Online Range-Streaming & Local Storage Loader: Opens in 1-2 seconds!
+  const loadBook = useCallback(async (forceReload = false) => {
     const vol = volumeRef.current;
     if (!vol) return;
 
-    // CRITICAL: If this book volume is already fully loaded in memory, DO NOT reload or reset state!
+    // If this book volume is already fully loaded in memory, DO NOT reload or reset state
     if (!forceReload && loadedVolumeIdRef.current === vol.id && docRef.current) {
       return;
     }
@@ -164,21 +164,21 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
 
     setIsBookLoaded(false);
     setLoadError(null);
-    setLoadingProgress(5);
-    setLoadingStatus('کتاب کی فائل کا جائزہ لیا جا رہا ہے...');
+    setLoadingProgress(15);
+    setLoadingStatus('کتاب سے رابطہ قائم ہو رہا ہے...');
 
     const initialP = vol.lastReadPage && vol.lastReadPage > 0 ? vol.lastReadPage : 1;
     setCurrentPage(initialP);
     setPageInput(String(initialP));
 
     try {
-      // 1. Check if full book is already saved in internal IndexedDB
+      // 1. Check if full book is saved in internal IndexedDB (offline download)
       const storedRecord = await getBookFromInternalStorage(vol.id);
       let buffer: ArrayBuffer | null = null;
 
       if (storedRecord && storedRecord.blob && storedRecord.blob.size > 100000) {
-        setLoadingStatus('انٹرنل اسٹوریج سے کتاب کے اوراق لوڈ ہو رہے ہیں...');
-        setLoadingProgress(95);
+        setLoadingStatus('محفوظ شدہ کتب سے لوڈ ہو رہی ہے...');
+        setLoadingProgress(90);
         buffer = await storedRecord.blob.arrayBuffer();
       }
 
@@ -188,52 +188,40 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
         const uploadedBlob = await getUploadedPdfBlob(bookId);
         if (uploadedBlob && uploadedBlob.size > 50000) {
           setLoadingStatus('اپلوڈ شدہ کتاب کھولی جا رہی ہے...');
-          setLoadingProgress(95);
+          setLoadingProgress(90);
           buffer = await uploadedBlob.arrayBuffer();
         }
       }
 
-      // 2. If not stored locally, download entire book 100% with live progress tracking
-      if (!buffer) {
-        setLoadingStatus('پوری کتاب ڈاؤن لوڈ ہو رہی ہے (100% مکمل ہونے پر کھلے گی)...');
-        buffer = await fetchPdfArrayBuffer(realPdfUrl, (pct) => {
-          setLoadingProgress(pct);
-          setLoadingStatus(`کتاب ڈاؤن لوڈ ہو رہی ہے: ${pct}%`);
-        });
+      let loadedDoc: pdfjsLib.PDFDocumentProxy;
 
-        // Save downloaded blob in IndexedDB for instant future access if valid size
-        if (buffer && buffer.byteLength > 100000) {
-          try {
-            await saveBookToInternalStorage({
-              volumeId: vol.id,
-              volumeNumber: vol.volumeNumber,
-              titleUrdu: vol.volumeTitleUrdu,
-              fileSize: vol.fileSize || `${Math.round(buffer.byteLength / (1024 * 1024))} MB`,
-              downloadedAt: new Date().toLocaleDateString('ur-PK'),
-              blob: new Blob([buffer], { type: 'application/pdf' }),
-            });
-          } catch {}
-        }
+      if (buffer) {
+        setLoadingProgress(100);
+        setLoadingStatus('کتاب کے اوراق تیار ہیں...');
+        loadedDoc = await loadPdfDocument({ data: buffer });
+      } else {
+        // DIRECT ONLINE STREAMING: Range requests load the document structure in ~1-2s!
+        setLoadingProgress(50);
+        setLoadingStatus('آن لائن صفحات کا رابطہ ہو رہا ہے...');
+        loadedDoc = await loadPdfDocument({ url: realPdfUrl }, (pct) => {
+          setLoadingProgress(pct);
+        });
       }
 
-      // 3. Initialize PDF.js Document from 100% loaded buffer
-      setLoadingProgress(100);
-      setLoadingStatus('کتاب کے اوراق مکمل تیار ہو چکے ہیں...');
-
-      const loadedDoc = await loadPdfDocument({ data: buffer });
       docRef.current = loadedDoc;
       setDoc(loadedDoc);
       loadedVolumeIdRef.current = vol.id;
       const total = loadedDoc.numPages || vol.pageCount || 476;
       setTotalPages(total);
       setIsBookLoaded(true);
+      setLoadingProgress(100);
 
       try {
         recordRecentRead(vol, initialP);
       } catch {}
     } catch (err: any) {
-      console.warn('Failed to load full PDF book:', err);
-      setLoadError(err.message || 'کتاب کی مکمل فائل ڈاؤن لوڈ کرنے میں دشواری پیش آئی۔ برائے مہربانی اپنا انٹرنیٹ چیک کریں یا دوبارہ کوشش فرمائیں۔');
+      console.warn('Failed to load PDF book:', err);
+      setLoadError(err.message || 'آن لائن کتاب کھولنے میں دشواری پیش آئی۔ برائے مہربانی اپنا انٹرنیٹ چیک کریں یا دوبارہ کوشش فرمائیں۔');
     } finally {
       loadingInProgressRef.current = false;
     }
@@ -242,15 +230,16 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
   // Initial load - ONLY executes when book volume ID changes, NEVER on page turns
   useEffect(() => {
     if (volume && loadedVolumeIdRef.current !== volume.id) {
-      loadEntireBook100Percent();
+      loadBook();
     }
-  }, [volume?.id, loadEntireBook100Percent]);
+  }, [volume?.id, loadBook]);
 
-  // Render Page to Canvas instantly from in-memory document
+  // Render Page to Canvas on-demand from streaming document
   const renderCurrentPage = useCallback(
     async (pageNum: number) => {
       if (!doc || !canvasRef.current) return;
 
+      setIsPageRendering(true);
       try {
         const page = await doc.getPage(pageNum);
         const canvas = canvasRef.current;
@@ -288,7 +277,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
         await task.promise;
         renderTaskRef.current = null;
 
-        // Silent background preload of adjacent pages for instantaneous swipe transitions
+        // Silent background preload of adjacent pages for smooth flip
         if (pageNum < totalPages) {
           doc.getPage(pageNum + 1).catch(() => {});
         }
@@ -299,6 +288,8 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
         if (err?.name !== 'RenderingCancelledException') {
           console.warn('Page render error:', err);
         }
+      } finally {
+        setIsPageRendering(false);
       }
     },
     [doc, rotation, zoomLevel, totalPages]
@@ -506,16 +497,21 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
 
       {/* 2. TOP MAIN HEADER: Centered Title + Live Loading Percentage + Prominent Back Button */}
       <header className="h-14 bg-white border-b border-stone-200 px-3 sm:px-5 flex items-center justify-between z-30 shrink-0 shadow-xs">
-        {/* Left: Live Loading Percentage Badge / Indicator */}
-        <div className="w-20 sm:w-36 flex items-center justify-start">
+        {/* Left: Status Badge / Page Indicator */}
+        <div className="w-24 sm:w-36 flex items-center justify-start">
           {!isBookLoaded ? (
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-300 text-emerald-800 text-[11px] sm:text-xs font-mono font-bold shadow-xs animate-pulse">
-              <span className="w-2 h-2 rounded-full bg-emerald-600" />
-              <span>{loadingProgress}% لوڈنگ</span>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-300 text-emerald-800 text-[11px] font-sans font-bold shadow-xs animate-pulse">
+              <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />
+              <span>کھولی جا رہی ہے...</span>
+            </div>
+          ) : isPageRendering ? (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-300 text-amber-800 text-[11px] font-sans font-bold shadow-xs">
+              <RefreshCw className="w-3 h-3 animate-spin text-amber-600" />
+              <span>صفحہ {currentPage}...</span>
             </div>
           ) : (
-            <div className="text-[11px] text-stone-400 font-sans hidden sm:block">
-              جلد {volume.volumeNumber}
+            <div className="text-[11px] text-stone-500 font-sans hidden sm:block">
+              جلد {volume.volumeNumber > 0 ? volume.volumeNumber : '۱'}
             </div>
           )}
         </div>
@@ -724,71 +720,39 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           </div>
         )}
 
-        {/* If Book is Still Loading 100%, show Elegant In-Reader Book Page Placeholder */}
+        {/* Fast Online Connection Card (Only shown during initial 1-2 second connection) */}
         {!isBookLoaded ? (
-          <div className="w-[94vw] max-w-[650px] min-h-[520px] sm:min-h-[700px] bg-white rounded-lg shadow-xl border border-stone-300 p-6 sm:p-10 flex flex-col justify-between text-stone-800 my-auto animate-in fade-in zoom-in-95 duration-200">
-            {/* Top Page Running Header (Styled like authentic Urdu Islamic book header) */}
-            <div className="border-b border-stone-300 pb-3 flex items-center justify-between text-stone-600 text-xs font-nastaliq">
-              <span>{volume.volumeNumber > 0 ? 'مجموعہ کتب: احتسابِ ناصبیت' : 'سلسلہ ردِ اعتراضات'}</span>
-              <span className="font-bold text-emerald-800">{volume.volumeTitleUrdu}</span>
-              <span>{volume.volumeNumber > 0 ? `جلد ${volume.volumeNumber}` : 'خصوصی کتاب'}</span>
+          <div className="w-[94vw] max-w-[500px] bg-white rounded-2xl shadow-xl border border-stone-200 p-8 flex flex-col items-center justify-center text-center space-y-4 my-auto animate-in fade-in duration-200">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 shadow-inner">
+              <BookOpen className="w-8 h-8 animate-pulse text-emerald-600" />
             </div>
 
-            {/* Center Loading Status & Live Percentage */}
-            <div className="py-8 sm:py-12 flex flex-col items-center justify-center text-center space-y-4 sm:space-y-5 my-auto">
-              <div className="relative">
-                <div className="w-20 h-20 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 shadow-inner">
-                  <BookOpen className="w-10 h-10 animate-pulse text-emerald-600" />
-                </div>
-                <div className="absolute -bottom-2 -right-2 bg-emerald-600 text-white text-[11px] font-mono font-bold px-2 py-0.5 rounded-full shadow">
-                  {loadingProgress}%
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <div className="text-4xl sm:text-5xl font-mono font-black text-emerald-700 tracking-tight">
-                  {loadingProgress}%
-                </div>
-                <h3 className="font-nastaliq text-lg sm:text-xl font-bold text-stone-800">
-                  کتاب ریڈر میں لوڈ ہو رہی ہے...
-                </h3>
-                <p className="text-xs text-emerald-700 font-semibold font-sans">
-                  {loadingStatus}
-                </p>
-              </div>
-
-              {/* Progress Line */}
-              <div className="w-64 sm:w-80 h-3 bg-stone-100 rounded-full border border-stone-200 overflow-hidden p-0.5 shadow-inner">
-                <div
-                  className="h-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-amber-400 rounded-full transition-all duration-200"
-                  style={{ width: `${Math.max(4, loadingProgress)}%` }}
-                />
-              </div>
-
-              <p className="text-xs text-stone-500 max-w-sm leading-relaxed font-sans px-2">
-                تمام صفحات ریڈر میں یکمشت محفوظ ہو رہے ہیں تاکہ کھلنے کے بعد ورق گردانی بغیر کسی تعطل کے فوری اور رواں ہو۔
+            <div className="space-y-1">
+              <h3 className="font-nastaliq text-xl font-bold text-stone-800">
+                {volume.volumeTitleUrdu} آن لائن کھولی جا رہی ہے...
+              </h3>
+              <p className="text-xs text-stone-500 font-sans">
+                {loadingStatus || 'براہِ راست آن لائن صفحات تیار ہو رہے ہیں'}
               </p>
-
-              {loadError && (
-                <div className="w-full max-w-sm p-4 bg-rose-50 border border-rose-300 rounded-2xl text-rose-800 text-xs space-y-2 text-right">
-                  <p className="leading-relaxed">{loadError}</p>
-                  <button
-                    onClick={() => loadEntireBook100Percent(true)}
-                    className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>دوبارہ کوشش فرمائیں</span>
-                  </button>
-                </div>
-              )}
             </div>
 
-            {/* Bottom Page Footer */}
-            <div className="border-t border-stone-300 pt-3 flex items-center justify-between text-stone-500 text-xs font-sans">
-              <span>اشاعت: دار التحقیق</span>
-              <span className="font-mono font-bold text-stone-700">صفحہ {currentPage}</span>
-              <span>تمام اوراق محفوظ</span>
-            </div>
+            {!loadError ? (
+              <div className="flex items-center gap-2 text-xs text-emerald-700 font-sans font-bold bg-emerald-50 px-4 py-2 rounded-full border border-emerald-200 shadow-xs">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>برائے مہربانی ایک لمحہ انتظار فرمائیں...</span>
+              </div>
+            ) : (
+              <div className="w-full p-4 bg-rose-50 border border-rose-300 rounded-xl text-rose-800 text-xs space-y-2 text-right">
+                <p className="leading-relaxed">{loadError}</p>
+                <button
+                  onClick={() => loadBook(true)}
+                  className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>دوبارہ کوشش فرمائیں</span>
+                </button>
+              </div>
+            )}
           </div>
         ) : null}
 
@@ -799,6 +763,14 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           }`}
           style={{ filter: getImageFilter() }}
         >
+          {/* Subtle on-demand page streaming indicator */}
+          {isPageRendering && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-stone-900/85 backdrop-blur-md text-white text-xs px-3.5 py-1.5 rounded-full flex items-center gap-2 shadow-xl animate-in fade-in font-sans border border-stone-700 pointer-events-none">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+              <span>صفحہ {currentPage} لوڈ ہو رہا ہے...</span>
+            </div>
+          )}
+
           <canvas
             ref={canvasRef}
             className="shadow-xl rounded bg-white transition-opacity duration-150"
@@ -836,16 +808,6 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({
           {totalPages} / {currentPage}
         </div>
       </footer>
-
-      {/* Mobile Floating Back Button */}
-      <button
-        onClick={onClose}
-        className="sm:hidden fixed bottom-16 right-4 z-50 bg-emerald-700 text-white shadow-2xl px-3.5 py-2 rounded-full flex items-center gap-1.5 text-xs font-bold active:scale-95 cursor-pointer border border-emerald-500"
-        title="واپس جائیں"
-      >
-        <ArrowRight className="w-4 h-4 stroke-[2.5]" />
-        <span className="font-nastaliq text-xs font-bold">واپس</span>
-      </button>
 
       {/* Dual Page Snip / Reference Editor Modal */}
       {showDualEditor && (
